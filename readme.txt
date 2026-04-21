@@ -1,0 +1,2 @@
+--> To run Server ``` python main/analysis.py ```
+--> To run APP ```streamlit run dashboard.py ```
