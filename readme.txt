@@ -1,2 +1,2 @@
---> To run Server ``` python main/analysis.py ```
---> To run APP ```streamlit run dashboard.py ```
+--> To run Server ``` python -m uvicorn api.server:app --reload  ```
+--> To run APP ```streamlit run app/app.py ```
