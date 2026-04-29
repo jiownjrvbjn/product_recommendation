@@ -205,19 +205,19 @@ col4.metric("Follow-up Rate", f"{eng['follow_up_rate']:.0%}")
 # TABS FOR ORGANIZED VIEW
 # ============================
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
+tab1, tab2, tab3, tab4 = st.tabs([
+    "🤖 AI Insights",
     "📊 Product Performance",
-    "📈 Trends & Analytics", 
+    # "📈 Trends & Analytics", 
     "⚔️ Competitive Intelligence",
-    "⚠️ Objection Resolution",
-    "🤖 AI Insights"
+    "⚠️ Objection Resolution"
 ])
 
 # ============================
 # TAB 1: Product Performance
 # ============================
 
-with tab1:
+with tab2:
     st.markdown("## 📦 Product Performance Overview")
     
     product_df = pd.DataFrame(products)
@@ -588,7 +588,7 @@ with tab4:
 # TAB 5: AI Insights (Enhanced)
 # ============================
 
-with tab5:
+with tab1:
     st.markdown("## 🤖 AI-Powered Insights")
 
     if st.button("Generate AI Insights"):
