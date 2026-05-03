@@ -1,31 +1,23 @@
 """
 server.py
 ------------------
-Enhanced FastAPI server with:
-- Original analytics and insights endpoints
-- Trend analytics endpoints
-- Competitive intelligence endpoints
-- Manager comparison endpoints
-- Objection resolution endpoints
+FastAPI server — AI Sales Assistant Edition
+- employee_type comes from UI (query param), NOT auto-assigned
+- /analytics/doctor/{doctor_id}?time_sec=60&employee_type=MR
+- /recommendation/preview/{doctor_id}?time_sec=60&employee_type=MR
 """
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import pandas as pd
 from typing import Optional
 
 from main.analytics_engine import DoctorAnalyticsEnhanced
-from main.llm_insights import LLMInsightsEngineEnhanced
-from init_services.init import initialize_services
 
-app = FastAPI(
-    title="Pharma Analytics API",
-    description="Enhanced analytics with trends, competitive intelligence, and AI insights",
-    version="2.0.0"
-)
 
-# CORS for frontend integration
+app = FastAPI(title="PatGPT — AI Sales Assistant", version="4.0.0")
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -34,221 +26,162 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize services
-initialize_services()
-df = pd.read_csv("data/doctor_sales_dummy_data.csv")
+REQUIRED_COLUMNS = {
+    "doctor_id", "doctor_name", "territory", "specialty",
+    "patient_load", "experience_years", "publications_count",
+    "social_media_reach", "outcome", "interest_level",
+    "follow_up", "interaction_id", "product_name",
+    "interaction_date", "employee_type", "actual_time_seconds",
+}
+
+VALID_EMPLOYEE_TYPES = {"mr", "area manager", "vp", "gm", "general manager"}
+
+
+def load_data():
+    df = pd.read_csv("data/doctor_sales_dummy_data.csv")
+    df.columns = df.columns.str.strip().str.lower()
+
+    missing = REQUIRED_COLUMNS - set(df.columns)
+    if missing:
+        raise RuntimeError(f"Missing columns: {missing}")
+
+    # String normalisation
+    for col in df.select_dtypes(include=["object"]).columns:
+        df[col] = df[col].astype(str).str.strip()
+
+    df["territory"]    = df["area"].str.lower()
+    df["doctor_id"]    = df["doctor_id"].astype(str).str.strip()
+    df["follow_up"]    = df["follow_up"].str.lower()
+    df["specialty"]    = df["specialty"].str.lower()
+    df["employee_type"] = df["employee_type"].str.lower()
+
+    # Outcome normalisation
+    outcome_map = {
+        "positive": "positive", "converted": "positive", "success": "positive",
+        "won": "positive", "yes": "positive",
+        "negative": "negative", "lost": "negative", "no": "negative",
+        "neutral": "neutral", "pending": "neutral",
+    }
+    df["outcome"] = df["outcome"].str.lower().map(outcome_map).fillna("neutral")
+
+    # Interest level → numeric
+    interest_map = {"low": 1, "medium": 3, "high": 5}
+    df["interest_level"] = (
+        df["interest_level"].astype(str).str.strip().str.lower()
+        .map(interest_map).fillna(0)
+    )
+
+    return df
+
+
+df = load_data()
 analytics_engine = DoctorAnalyticsEnhanced(df)
-llm_engine = LLMInsightsEngineEnhanced()
 
-
-# ============================================================================
-# ORIGINAL ENDPOINTS (Unchanged)
-# ============================================================================
 
 @app.get("/")
 def root():
+    return {"status": "running", "version": "4.0.0", "mode": "AI Sales Assistant"}
+
+
+@app.get("/health")
+def health():
     return {
-        "status": "running",
-        "version": "2.0.0",
-        "features": [
-            "basic_analytics",
-            "llm_insights",
-            "trend_analytics",
-            "competitive_intelligence",
-            "manager_comparisons",
-            "objection_resolution"
-        ]
+        "status": "healthy",
+        "rows": len(analytics_engine.df),
+        "doctors": analytics_engine.df["doctor_id"].nunique(),
     }
 
 
-@app.get("/doctors/{territory}")
-def get_doctors(territory: str):
-    """Get list of doctors in a territory"""
-    territory = territory.strip().lower()
-    data = analytics_engine.df.copy()
-    data["territory"] = data["territory"].str.strip().str.lower()
-    docs = data[data["territory"] == territory][["doctor_id", "doctor_name"]].drop_duplicates()
-    return docs.to_dict(orient="records")
-
-
-@app.get("/analytics/doctor/{doctor_id}")
-def get_doctor(doctor_id: int):
-    """Get comprehensive doctor analytics (enhanced with all new features)"""
-    result = analytics_engine.get_doctor_summary(doctor_id)
-    
-    if result is None:
-        raise HTTPException(status_code=404, detail="Doctor not found")
-    
-    return JSONResponse(content=result)
-
-
-@app.get("/insights/doctor/{doctor_id}")
-def get_insights(doctor_id: int):
-    """Get LLM-powered insights (enhanced with sentiment, objections, competitive)"""
-    analytics_data = analytics_engine.get_doctor_summary(doctor_id)
-    
-    if analytics_data is None:
-        raise HTTPException(status_code=404, detail="Doctor not found")
-    
-    insights = llm_engine.generate_doctor_insights(analytics_data)
-    return JSONResponse(content={"insights": insights})
-
-
-# ============================================================================
-# NEW ENDPOINTS - Trend Analytics
-# ============================================================================
-
-@app.get("/analytics/trends/doctor/{doctor_id}")
-def get_doctor_trends(doctor_id: int, days: Optional[int] = 90):
-    """Get time-series trends for a doctor"""
-    trends = analytics_engine.trend_engine.get_doctor_trends(doctor_id, days)
-    
-    if trends is None:
-        raise HTTPException(status_code=404, detail="Doctor not found or insufficient data")
-    
-    return JSONResponse(content=trends)
-
-
-@app.get("/analytics/trends/products/{doctor_id}")
-def get_product_trends(doctor_id: int):
-    """Get product-specific trends for a doctor"""
-    product_trends = analytics_engine.trend_engine.get_product_trends(doctor_id)
-    
-    if not product_trends:
-        raise HTTPException(status_code=404, detail="Doctor not found or no product data")
-    
-    return JSONResponse(content={"products": product_trends})
-
-
-# ============================================================================
-# NEW ENDPOINTS - Competitive Intelligence
-# ============================================================================
-
-@app.get("/analytics/competitive/doctor/{doctor_id}")
-def get_competitive_analysis(doctor_id: int):
-    """Get competitive intelligence for a doctor"""
-    competitive = analytics_engine.competitive_engine.get_competitive_analysis(doctor_id)
-    
-    if competitive is None:
-        raise HTTPException(status_code=404, detail="Doctor not found")
-    
-    return JSONResponse(content=competitive)
-
-
-# ============================================================================
-# NEW ENDPOINTS - Manager Comparisons
-# ============================================================================
-
-@app.get("/analytics/territory/{territory}")
-def get_territory_benchmarks(territory: str):
-    """Get territory-wide benchmarks and statistics"""
-    benchmarks = analytics_engine.manager_engine.get_territory_benchmarks(territory)
-    
-    if benchmarks is None:
-        raise HTTPException(status_code=404, detail="Territory not found")
-    
-    return JSONResponse(content=benchmarks)
-
-
-@app.get("/analytics/comparison/doctor/{doctor_id}/territory/{territory}")
-def compare_doctor_to_territory(doctor_id: int, territory: str):
-    """Compare a doctor against territory benchmarks"""
-    comparison = analytics_engine.manager_engine.compare_doctor_to_territory(
-        doctor_id, territory
-    )
-    
-    if comparison is None:
-        raise HTTPException(status_code=404, detail="Doctor or territory not found")
-    
-    return JSONResponse(content=comparison)
-
-
-@app.get("/analytics/comparison/specialty/{doctor_id}")
-def compare_doctor_to_specialty(doctor_id: int):
-    """Compare a doctor against others in same specialty"""
-    comparison = analytics_engine.manager_engine.get_specialty_comparison(doctor_id)
-    
-    if comparison is None:
-        raise HTTPException(status_code=404, detail="Doctor not found")
-    
-    return JSONResponse(content=comparison)
-
-
-@app.get("/analytics/territory/overview/{territory}")
-def get_territory_overview(territory: str):
-    """Get complete territory overview for managers"""
-    overview = analytics_engine.get_territory_overview(territory)
-    
-    if overview is None:
-        raise HTTPException(status_code=404, detail="Territory not found")
-    
-    return JSONResponse(content=overview)
-
-
-# ============================================================================
-# NEW ENDPOINTS - Objection Resolution
-# ============================================================================
-
-@app.get("/analytics/objections/doctor/{doctor_id}")
-def get_objection_analysis(doctor_id: int):
-    """Get detailed objection analysis and resolution strategies"""
-    objection_analysis = analytics_engine.objection_engine.get_objection_analysis(doctor_id)
-    
-    if objection_analysis is None:
-        raise HTTPException(status_code=404, detail="Doctor not found")
-    
-    return JSONResponse(content=objection_analysis)
-
-
-# ============================================================================
-# UTILITY ENDPOINTS
-# ============================================================================
-
 @app.get("/territories")
-def get_all_territories():
-    """Get list of all territories"""
-    territories = analytics_engine.df['territory'].unique().tolist()
+def get_territories():
+    territories = analytics_engine.df["area"].dropna().unique().tolist()
     return {"territories": sorted(territories)}
 
 
-@app.get("/specialties")
-def get_all_specialties():
-    """Get list of all specialties"""
-    specialties = analytics_engine.df['specialty'].unique().tolist()
-    return {"specialties": sorted(specialties)}
-
-
 @app.get("/doctors")
-def get_all_doctors(
-    territory: Optional[str] = None,
-    specialty: Optional[str] = None
+def get_doctors(
+    territory: Optional[str] = Query(None),
+    specialty: Optional[str] = Query(None),
 ):
-    """Get list of all doctors with optional filters"""
-    df = analytics_engine.df.copy()
-    
+    data = analytics_engine.df
+
     if territory:
-        df = df[df['territory'] == territory.strip().lower()]
-    
+        data = data[data["territory"] == territory.strip().lower()]
     if specialty:
-        df = df[df['specialty'] == specialty.strip()]
-    
-    doctors = df[['doctor_id', 'doctor_name', 'territory', 'specialty']].drop_duplicates()
-    return doctors.to_dict(orient='records')
+        data = data[data["specialty"] == specialty.strip().lower()]
+
+    result = (
+        data[["doctor_id", "doctor_name", "territory", "specialty"]]
+        .drop_duplicates()
+    )
+    return result.to_dict(orient="records")
 
 
-# ============================================================================
-# HEALTH CHECK
-# ============================================================================
+@app.get("/analytics/doctor/{doctor_id}")
+def get_doctor(
+    doctor_id: str,
+    time_sec: int = Query(60, ge=1, le=3600, description="Visit duration in seconds"),
+    employee_type: str = Query("mr", description="Employee type selected from UI: mr / area manager / vp / gm"),
+):
+    et = employee_type.strip().lower()
+    result = analytics_engine.get_doctor_summary(
+        doctor_id=doctor_id,
+        selected_time=time_sec,
+        employee_type=et,
+    )
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"Doctor '{doctor_id}' not found")
 
-@app.get("/health")
-def health_check():
-    """API health check"""
+    return JSONResponse(content=result)
+
+
+@app.get("/analytics/territory/{territory}")
+def get_territory(territory: str):
+    result = analytics_engine.get_territory_overview(territory)
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"Territory '{territory}' not found")
+    return JSONResponse(content=result)
+
+
+@app.get("/recommendation/preview/{doctor_id}")
+def recommendation_preview(
+    doctor_id: str,
+    time_sec: int = Query(..., ge=1, le=3600),
+    employee_type: str = Query("mr"),
+):
+    """
+    Lightweight recommendation preview — used by the time-slider in the UI.
+    Returns structured product buckets (primary / support / closing / reminder).
+    """
+    doctor_df = analytics_engine.df[analytics_engine.df["doctor_id"] == doctor_id]
+
+    if doctor_df.empty:
+        raise HTTPException(status_code=404, detail="Doctor not found")
+
+    scored = analytics_engine.reco_engine.score_products(doctor_df)
+
+    # Need AIDA stage
+    aida = analytics_engine.aida_classifier.classify(doctor_df)
+
+    reco = analytics_engine.reco_engine.build_recommendations(
+        doctor_df=doctor_df,
+        scored_products=scored,
+        selected_time=time_sec,
+        aida_stage=aida["aida_stage"],
+    )
+
     return {
-        "status": "healthy",
-        "analytics_engine": "operational",
-        "llm_engine": "operational" if llm_engine.client else "unavailable",
-        "data_loaded": len(analytics_engine.df) > 0,
-        "total_doctors": analytics_engine.df['doctor_id'].nunique()
+        "mode":              reco["mode"],
+        "effective_time":    reco["effective_time"],
+        "event_active":      reco["event_active"],
+        "event_type":        reco["event_type"],
+        "total_pitched":     reco["total_pitched"],
+        "primary_products":  reco["primary_products"],
+        "support_products":  reco["support_products"],
+        "closing_products":  reco["closing_products"],
+        "reminder_items":    reco["reminder_items"],
+        "aida_stage":        aida["aida_stage"],
+        "employee_type":     employee_type.strip().lower(),
     }
 
 

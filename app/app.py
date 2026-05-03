@@ -1,623 +1,816 @@
+"""
+app.py — PatGPT AI Sales Assistant
+- AIDA progress bar with stage guidance
+- Employee type selection buttons (MR / Area Manager / VP / GM)
+- Product recommendation cards panel (no graph)
+- Conversation guide: What to say / show / avoid / next step
+- Next Best Action engine output
+- Intent score + Visit success probability
+- Doctor persona badge
+"""
+
 import streamlit as st
 import requests
-import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
-import matplotlib
-from plotly.subplots import make_subplots
+import html
 
 BASE_URL = "http://localhost:8000"
 
-st.set_page_config(page_title="Doctor Dashboard", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(
+    page_title="PatGPT",
+    layout="centered",
+    initial_sidebar_state="collapsed",
+)
 
-# Custom CSS for better styling
+# ─────────────────────────────────
+# GLOBAL STYLES
+# ─────────────────────────────────
 st.markdown("""
 <style>
-    .metric-card {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        padding: 20px;
-        border-radius: 10px;
-        color: white;
-    }
-    .insight-box {
-        background-color: #f0f2f6;
-        padding: 15px;
-        border-radius: 8px;
-        border-left: 4px solid #667eea;
-        margin: 10px 0;
-    }
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 24px;
-    }
-    .stTabs [data-baseweb="tab"] {
-        height: 50px;
-        padding: 10px 20px;
-        font-weight: 600;
-    }
+@import url('https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=DM+Sans:wght@400;500;600&display=swap');
+
+html, body, [class*="css"] {
+    font-family: 'DM Sans', sans-serif;
+    background-color: #0F0E17;
+    color: #FFFFFE;
+}
+
+/* Logo */
+.logo {
+    font-family: 'Syne', sans-serif;
+    font-size: 2.6rem;
+    font-weight: 800;
+    background: linear-gradient(135deg, #6C63FF 0%, #A855F7 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    text-align: center;
+    letter-spacing: -1px;
+    margin-bottom: 0.25rem;
+}
+.logo-sub {
+    text-align: center;
+    font-size: 0.85rem;
+    color: #94A3B8;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    margin-bottom: 2.5rem;
+}
+
+/* Section label */
+.section-label {
+    font-size: 0.72rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    color: #94A3B8;
+    margin-bottom: 0.6rem;
+    margin-top: 1.4rem;
+}
+
+/* Doctor hero card */
+.doc-hero {
+    background: linear-gradient(135deg, #1A1744 0%, #2D1B69 100%);
+    border: 1px solid rgba(108,99,255,0.35);
+    border-radius: 20px;
+    padding: 1.5rem 1.6rem 1.3rem;
+    margin-bottom: 1rem;
+    position: relative;
+    overflow: hidden;
+}
+.doc-hero::before {
+    content: '';
+    position: absolute;
+    top: -40px; right: -40px;
+    width: 160px; height: 160px;
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(168,85,247,0.18) 0%, transparent 70%);
+}
+.doc-hero-name {
+    font-family: 'Syne', sans-serif;
+    font-size: 1.4rem;
+    font-weight: 800;
+    color: #FFFFFE;
+    margin-bottom: 0.25rem;
+}
+.doc-hero-meta {
+    font-size: 0.82rem;
+    color: #C4B5FD;
+    margin-bottom: 1rem;
+    line-height: 1.7;
+}
+.doc-hero-stats {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 0.7rem;
+}
+.stat-box {
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 12px;
+    padding: 0.65rem 0.5rem;
+    text-align: center;
+}
+.stat-box-val { font-family: 'Syne', sans-serif; font-size: 1.05rem; font-weight: 700; color: #FFFFFE; line-height: 1.2; }
+.stat-box-lbl { font-size: 0.62rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.1em; color: #94A3B8; margin-top: 0.2rem; }
+
+/* Badges / pills */
+.badge-row { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0.6rem 0 1rem; }
+.badge {
+    display: inline-flex; align-items: center; gap: 0.3rem;
+    padding: 0.35rem 0.9rem; border-radius: 99px;
+    font-size: 0.8rem; font-weight: 700; letter-spacing: 0.02em;
+}
+.badge-purple { background: rgba(108,99,255,0.18); border: 1px solid rgba(108,99,255,0.4); color: #A78BFA; }
+.badge-green  { background: #DCFCE7; color: #15803D; }
+.badge-yellow { background: #FEF9C3; color: #A16207; }
+.badge-red    { background: #FEE2E2; color: #DC2626; }
+.badge-teal   { background: rgba(16,185,129,0.15); border: 1px solid rgba(16,185,129,0.3); color: #34D399; }
+.badge-amber  { background: rgba(245,158,11,0.15); border: 1px solid rgba(245,158,11,0.3); color: #FBBF24; }
+.badge-slate  { background: rgba(100,116,139,0.15); border: 1px solid rgba(100,116,139,0.3); color: #94A3B8; }
+
+/* AIDA bar */
+.aida-wrap {
+    background: #16142A;
+    border: 1px solid rgba(108,99,255,0.2);
+    border-radius: 16px;
+    padding: 1.2rem 1.4rem 1rem;
+    margin-bottom: 1rem;
+}
+.aida-title {
+    font-family: 'Syne', sans-serif;
+    font-size: 0.9rem; font-weight: 700; color: #FFFFFE; margin-bottom: 0.8rem;
+}
+.aida-bar {
+    display: grid; grid-template-columns: repeat(4, 1fr);
+    gap: 0.35rem; margin-bottom: 0.9rem;
+}
+.aida-step {
+    text-align: center; padding: 0.55rem 0.3rem;
+    border-radius: 10px; border: 1px solid transparent;
+    transition: all 0.2s;
+}
+.aida-step-active {
+    border-color: currentColor;
+    box-shadow: 0 0 12px rgba(255,255,255,0.1);
+}
+.aida-step-inactive { opacity: 0.3; }
+.aida-emoji { font-size: 1.1rem; line-height: 1; }
+.aida-label { font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; margin-top: 0.2rem; }
+.aida-guidance {
+    background: rgba(255,255,255,0.04);
+    border-radius: 10px; padding: 0.85rem 1rem;
+    border-left: 3px solid;
+}
+.aida-guidance-row { margin-bottom: 0.5rem; }
+.aida-guidance-row:last-child { margin-bottom: 0; }
+.aida-guidance-lbl { font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: #94A3B8; margin-bottom: 0.15rem; }
+.aida-guidance-val { font-size: 0.83rem; color: #CBD5E1; line-height: 1.5; }
+
+/* Product card panel */
+.prod-panel {
+    background: #16142A;
+    border: 1px solid rgba(108,99,255,0.2);
+    border-radius: 16px;
+    overflow: hidden;
+    margin-bottom: 1rem;
+}
+.prod-panel-header {
+    padding: 0.9rem 1.3rem 0.7rem;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+    font-family: 'Syne', sans-serif;
+    font-size: 0.9rem; font-weight: 700; color: #FFFFFE;
+}
+.prod-card {
+    padding: 0.95rem 1.3rem;
+    border-bottom: 1px solid rgba(255,255,255,0.05);
+    display: flex; align-items: center; gap: 1rem;
+}
+.prod-card:last-child { border-bottom: none; }
+.prod-rank {
+    font-family: 'Syne', sans-serif;
+    font-size: 1.1rem; font-weight: 800;
+    color: rgba(255,255,255,0.15);
+    min-width: 1.5rem; text-align: center;
+}
+.prod-body { flex: 1; }
+.prod-name { font-size: 0.95rem; font-weight: 700; color: #FFFFFE; margin-bottom: 0.2rem; }
+.prod-meta { font-size: 0.76rem; color: #64748B; }
+.prod-badges { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-top: 0.3rem; }
+.prod-badge {
+    font-size: 0.68rem; font-weight: 700;
+    padding: 0.18rem 0.55rem; border-radius: 99px; letter-spacing: 0.04em;
+}
+.pb-primary  { background: rgba(108,99,255,0.2); border: 1px solid rgba(108,99,255,0.4); color: #A78BFA; }
+.pb-support  { background: rgba(16,185,129,0.12); border: 1px solid rgba(16,185,129,0.3); color: #34D399; }
+.pb-closing  { background: rgba(245,158,11,0.12); border: 1px solid rgba(245,158,11,0.3); color: #FBBF24; }
+.pb-reminder { background: rgba(100,116,139,0.12); border: 1px solid rgba(100,116,139,0.3); color: #94A3B8; }
+.prod-score-bar-wrap { min-width: 3.5rem; text-align: right; }
+.prod-score-pct { font-family: 'Syne', sans-serif; font-size: 0.9rem; font-weight: 700; color: #FFFFFE; }
+.prod-score-sub { font-size: 0.65rem; color: #64748B; }
+.prod-score-bar {
+    width: 100%; height: 3px; border-radius: 99px;
+    background: rgba(255,255,255,0.07); margin-top: 0.3rem;
+    overflow: hidden;
+}
+.prod-score-fill { height: 100%; border-radius: 99px; }
+
+/* NBA card */
+.nba-card {
+    background: linear-gradient(135deg, #1A1744 0%, #0F172A 100%);
+    border: 1px solid rgba(108,99,255,0.35);
+    border-radius: 16px;
+    padding: 1.1rem 1.3rem;
+    margin-bottom: 1rem;
+}
+.nba-goal { font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: #64748B; margin-bottom: 0.5rem; }
+.nba-action { font-size: 1rem; font-weight: 700; color: #FFFFFE; margin-bottom: 0.4rem; }
+.nba-cta {
+    display: inline-block;
+    background: linear-gradient(135deg, #6C63FF, #A855F7);
+    color: #FFFFFE; font-size: 0.82rem; font-weight: 700;
+    padding: 0.4rem 1.1rem; border-radius: 99px;
+    margin-top: 0.3rem;
+}
+.nba-product { font-size: 0.78rem; color: #64748B; margin-top: 0.5rem; }
+
+/* Conversation guide */
+.convo-wrap {
+    background: #16142A;
+    border: 1px solid rgba(108,99,255,0.2);
+    border-radius: 16px;
+    padding: 1.2rem 1.4rem;
+    margin-bottom: 1rem;
+}
+.convo-title {
+    font-family: 'Syne', sans-serif;
+    font-size: 0.9rem; font-weight: 700; color: #FFFFFE; margin-bottom: 0.9rem;
+}
+.convo-row {
+    display: flex; gap: 0.8rem; align-items: flex-start;
+    padding: 0.7rem 0;
+    border-bottom: 1px solid rgba(255,255,255,0.05);
+}
+.convo-row:last-child { border-bottom: none; padding-bottom: 0; }
+.convo-icon { font-size: 1.1rem; flex-shrink: 0; margin-top: 0.05rem; }
+.convo-lbl { font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: #94A3B8; margin-bottom: 0.2rem; }
+.convo-val { font-size: 0.83rem; color: #CBD5E1; line-height: 1.5; }
+
+/* Employee buttons override */
+div[data-testid="column"] .stButton > button {
+    width: 100%;
+    border-radius: 10px;
+    font-size: 0.82rem;
+    font-weight: 700;
+    padding: 0.5rem;
+    border: 1px solid rgba(108,99,255,0.3);
+    background: rgba(108,99,255,0.1);
+    color: #A78BFA;
+    transition: all 0.15s;
+}
+div[data-testid="column"] .stButton > button:hover {
+    background: rgba(108,99,255,0.25);
+    border-color: rgba(108,99,255,0.6);
+}
+
+/* Success probability bar */
+.success-bar-wrap {
+    background: #16142A;
+    border: 1px solid rgba(255,255,255,0.07);
+    border-radius: 14px;
+    padding: 0.9rem 1.2rem;
+    margin-bottom: 0.8rem;
+}
+.success-bar-label { font-size: 0.72rem; color: #94A3B8; font-weight: 600; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 0.5rem; }
+.success-bar-row { display: flex; align-items: center; gap: 0.8rem; }
+.success-bar { flex: 1; height: 6px; background: rgba(255,255,255,0.08); border-radius: 99px; overflow: hidden; }
+.success-bar-fill { height: 100%; border-radius: 99px; }
+.success-pct { font-family: 'Syne', sans-serif; font-size: 1rem; font-weight: 800; }
+
+/* Divider */
+hr { border: none; border-top: 1px solid #1E293B; margin: 1.4rem 0; }
+
+/* Hide streamlit chrome */
+#MainMenu, footer { visibility: hidden; }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🧠 Enhanced Doctor Analytics Dashboard")
 
-# ============================
-# HELPERS
-# ============================
-
-@st.cache_data
+# ─────────────────────────────────
+# API HELPERS
+# ─────────────────────────────────
+@st.cache_data(ttl=300)
 def get_territories():
-    df = pd.read_csv("data/doctor_sales_dummy_data.csv")
-    df.columns = df.columns.str.strip().str.lower()
-    return sorted(df["territory"].unique().tolist())
-
-
-@st.cache_data
-def get_doctors(territory):
-    res = requests.get(f"{BASE_URL}/doctors/{territory}")
-    return res.json()
-
-
-def get_doctor_data(doctor_id):
-    analytics = requests.get(f"{BASE_URL}/analytics/doctor/{doctor_id}").json()
-    return analytics
-
-
-def get_trends_data(doctor_id):
     try:
-        response = requests.get(f"{BASE_URL}/analytics/trends/doctor/{doctor_id}")
-        response.raise_for_status()
-        return response.json()
-    except:
+        r = requests.get(f"{BASE_URL}/territories")
+        r.raise_for_status()
+        return r.json().get("territories", [])
+    except Exception as e:
+        st.error(f"Could not fetch territories: {e}")
+        return []
+
+
+@st.cache_data(ttl=300)
+def get_doctors_by_territory(territory: str):
+    try:
+        r = requests.get(f"{BASE_URL}/doctors", params={"territory": territory})
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        st.error(f"Could not fetch doctors: {e}")
+        return []
+
+
+def get_analytics(doctor_id: str, time_sec: int, employee_type: str):
+    try:
+        r = requests.get(
+            f"{BASE_URL}/analytics/doctor/{doctor_id}",
+            params={"time_sec": time_sec, "employee_type": employee_type},
+        )
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        st.error(f"Failed to load doctor data: {e}")
         return None
 
 
-def get_competitive_data(doctor_id):
-    try:
-        response = requests.get(f"{BASE_URL}/analytics/competitive/doctor/{doctor_id}")
-        response.raise_for_status()
-        return response.json()
-    except:
-        return None
+# ─────────────────────────────────
+# SESSION STATE
+# ─────────────────────────────────
+for key, default in [
+    ("page", "home"),
+    ("selected_territory", None),
+    ("selected_doctor_id", None),
+    ("selected_doctor_name", None),
+    ("employee_type", "MR"),
+    ("selected_time", 60),
+    ("analytics_data", None),
+    ("submitted", False),
+]:
+    if key not in st.session_state:
+        st.session_state[key] = default
 
 
-def get_territory_comparison(doctor_id, territory):
-    try:
-        response = requests.get(f"{BASE_URL}/analytics/comparison/doctor/{doctor_id}/territory/{territory}")
-        response.raise_for_status()
-        return response.json()
-    except:
-        return None
+# ─────────────────────────────────
+# HOME PAGE
+# ─────────────────────────────────
+def home_page():
+    st.markdown('<div class="logo">patgpt</div>', unsafe_allow_html=True)
+    st.markdown('<div class="logo-sub">AI Sales Assistant · Pharma</div>', unsafe_allow_html=True)
+
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        territories = get_territories()
+        if not territories:
+            st.warning("No territories found. Please check your backend.")
+            return
+
+        territory = st.selectbox(
+            "Select Territory", territories,
+            index=None, placeholder="Choose a territory…",
+        )
+
+        if territory:
+            doctors = get_doctors_by_territory(territory)
+            if doctors:
+                doctor_options = {
+                    f"{d['doctor_name']} (ID: {d['doctor_id']})": d["doctor_id"]
+                    for d in doctors
+                }
+                selected_label = st.selectbox(
+                    "Select Doctor", list(doctor_options.keys()),
+                    index=None, placeholder="Choose a doctor…",
+                )
+                if selected_label:
+                    if st.button("Open Sales Assistant", use_container_width=True):
+                        st.session_state.page = "dashboard"
+                        st.session_state.selected_territory = territory
+                        st.session_state.selected_doctor_id = str(doctor_options[selected_label]).strip()
+                        st.session_state.selected_doctor_name = selected_label.split(" (ID:")[0]
+                        st.session_state.analytics_data = None
+                        st.session_state.submitted = False
+                        st.rerun()
+            else:
+                st.info("No doctors found in this territory.")
 
 
-def get_objection_details(doctor_id):
-    try:
-        response = requests.get(f"{BASE_URL}/analytics/objections/doctor/{doctor_id}")
-        response.raise_for_status()
-        return response.json()
-    except:
-        return None
-
-
-# ============================
-# SIDEBAR
-# ============================
-
-st.sidebar.header("🔍 Filters")
-
-territory = st.sidebar.selectbox("Select Territory", get_territories())
-
-doctors = get_doctors(territory)
-
-doctor_map = {
-    f"{d['doctor_name']} (ID: {d['doctor_id']})": d["doctor_id"]
-    for d in doctors
-}
-
-doctor_selected = st.sidebar.selectbox(
-    "Select Doctor",
-    list(doctor_map.keys()),
-    index=None,
-    placeholder="Select a doctor"
-)
-
-if doctor_selected is None:
-    st.warning("⚠️ Please select a doctor to view analytics")
-    st.stop()
-
-doctor_id = doctor_map[doctor_selected]
-
-# Load manager view toggle
-manager_view = st.sidebar.checkbox("📊 Manager View", value=False)
-
-# ============================
-# DATA FETCH
-# ============================
-
-with st.spinner("Loading analytics..."):
-    analytics = get_doctor_data(doctor_id)
-    trends = get_trends_data(doctor_id)
-    competitive = get_competitive_data(doctor_id)
-    territory_comp = get_territory_comparison(doctor_id, territory)
-    objection_details = get_objection_details(doctor_id)
-
-doc = analytics["doctor_info"]
-eng = analytics["engagement_metrics"]
-products = analytics["product_performance"]["product_breakdown"]
-
-# ============================
-# HEADER WITH PERFORMANCE TIER
-# ============================
-
-col_header1, col_header2 = st.columns([3, 1])
-
-with col_header1:
-    st.subheader(f"👨‍⚕️ {doc['doctor_name']} ({doc['specialty']})")
-    st.write(f"**Experience:** {doc['experience_years']} years | **Publications:** {doc['publications_count']} | **Social Reach:** {doc['social_media_reach']} followers")
-    st.write(f"**Patient Load:** {doc['patient_load']} patients | **Territory:** {doc['territory'].title()}")
-
-with col_header2:
-    if territory_comp:
-        tier = territory_comp['performance_vs_avg']['performance_tier']
-        percentile = territory_comp['performance_vs_avg']['percentile_rank']
-        
-        tier_colors = {
-            "Top Performer": "🟢",
-            "Above Average": "🟡",
-            "Below Average": "🟠",
-            "Needs Attention": "🔴"
-        }
-        
-        # st.metric(
-        #     "Performance Tier",
-        #     f"{tier_colors.get(tier, '⚪')} {tier}",
-        #     f"{percentile:.0f}th percentile"
-        # )
-        
-        color_map = {
-    "Top Performer": "#22c55e",
-    "Above Average": "#eab308",
-    "Below Average": "#f97316",
-    "Needs Attention": "#ef4444"
+# ─────────────────────────────────
+# HELPERS
+# ─────────────────────────────────
+def _product_type_badge(bucket: str) -> str:
+    classes = {
+        "primary":  "pb-primary",
+        "support":  "pb-support",
+        "closing":  "pb-closing",
+        "reminder": "pb-reminder",
     }
+    labels = {
+        "primary":  "⭐ Primary",
+        "support":  "🔗 Support",
+        "closing":  "🎯 Closing",
+        "reminder": "📌 Reminder",
+    }
+    cls = classes.get(bucket, "pb-primary")
+    lbl = labels.get(bucket, bucket.capitalize())
+    return f'<span class="prod-badge {cls}">{lbl}</span>'
+
+
+def _category_badge(cat: str) -> str:
+    cat_map = {
+        "high_performer":               ("🏆 High Performer", "#10B981"),
+        "high_interest_low_conversion": ("🔥 High Interest", "#F59E0B"),
+        "potential":                    ("🌱 Potential", "#6C63FF"),
+        "low_performer":                ("⚠ Low Perform", "#EF4444"),
+    }
+    label, color = cat_map.get(cat, (cat, "#64748B"))
+    return f'<span class="prod-badge" style="background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);color:{color}">{label}</span>'
+
+
+def _score_bar_color(score: float) -> str:
+    if score >= 0.6:
+        return "#10B981"
+    elif score >= 0.35:
+        return "#F59E0B"
+    return "#EF4444"
+
+
+def _render_product_card(product: dict, bucket: str, rank: int):
+    name    = html.escape(str(product.get("product_name", "—")))
+    score   = product.get("score", 0)
+    conv    = product.get("conversion_rate", 0)
+    interest = product.get("avg_interest", 0)
+    cat     = product.get("category", "")
+    fill_w  = int(score * 100)
+    fill_c  = _score_bar_color(score)
+
+    bucket_badge = _product_type_badge(bucket)
+    cat_badge    = _category_badge(cat)
 
     st.markdown(f"""
-    <div style="display:flex; flex-direction:column; align-items:flex-start;">
-        <div style="font-size:14px; color:gray;">Performance Tier</div>
-        <div style="display:flex; align-items:center; gap:10px;">
-            <div style="width:14px; height:14px; border-radius:50%; background:{color_map.get(tier, '#9ca3af')};"></div>
-            <div style="font-size:18px; font-weight:600;">{tier}</div>
+    <div class="prod-card">
+        <div class="prod-rank">#{rank}</div>
+        <div class="prod-body">
+            <div class="prod-name">{name}</div>
+            <div class="prod-meta">Conv {conv:.0%} · Interest {interest:.1f}/5</div>
+            <div class="prod-badges">{bucket_badge}{cat_badge}</div>
         </div>
-        <div style="font-size:13px; color:#22c55e;">↑ {percentile:.0f}th percentile</div>
+        <div class="prod-score-bar-wrap">
+            <div class="prod-score-pct">{fill_w}%</div>
+            <div class="prod-score-sub">score</div>
+            <div class="prod-score-bar">
+                <div class="prod-score-fill" style="width:{fill_w}%;background:{fill_c};"></div>
+            </div>
+        </div>
     </div>
     """, unsafe_allow_html=True)
 
-# ============================
-# KEY METRICS ROW
-# ============================
 
-col1, col2, col3, col4 = st.columns(4)
-
-col1.metric("Conversion Rate", f"{eng['conversion_rate']:.0%}")
-col2.metric("Avg Interest", f"{eng['avg_interest_level']:.1f}/5")
-col3.metric("Total Interactions", eng["total_interactions"])
-col4.metric("Follow-up Rate", f"{eng['follow_up_rate']:.0%}")
-
-# ============================
-# TABS FOR ORGANIZED VIEW
-# ============================
-
-tab1, tab2, tab3, tab4 = st.tabs([
-    "🤖 AI Insights",
-    "📊 Product Performance",
-    # "📈 Trends & Analytics", 
-    "⚔️ Competitive Intelligence",
-    "⚠️ Objection Resolution"
-])
-
-# ============================
-# TAB 1: Product Performance
-# ============================
-
-with tab2:
-    st.markdown("## 📦 Product Performance Overview")
-    
-    product_df = pd.DataFrame(products)
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        fig = px.bar(
-            product_df,
-            x="product_name",
-            y="conversion_rate",
-            title="Conversion Rate per Product",
-            color="conversion_rate",
-            color_continuous_scale="Blues"
-        )
-        fig.update_layout(showlegend=False)
-        st.plotly_chart(fig, use_container_width=True)
-    
-    with col2:
-        fig2 = px.scatter(
-            product_df,
-            x="avg_interest",
-            y="conversion_rate",
-            size="times_presented",
-            hover_name="product_name",
-            title="Interest vs Conversion",
-            color="times_presented",
-            color_continuous_scale="Viridis"
-        )
-        st.plotly_chart(fig2, use_container_width=True)
-    
-    # Product table
-    st.markdown("### Product Details")
-    st.dataframe(
-        product_df.style.background_gradient(cmap='RdYlGn', subset=['conversion_rate']),
-        use_container_width=True
-    )
-
-# ============================
-# TAB 2: Trends & Analytics
-# ============================
-
-# with tab2:
-#     st.markdown("## 📈 Trend Analytics")
-    
-#     if trends:
-#         # Trend direction indicators
-#         trend_summary = trends.get('trends', {})
-#         col1, col2, col3 = st.columns(3)
-        
-#         with col1:
-#             conv_trend = trend_summary.get('conversion', 'stable')
-#             trend_emoji = {"improving": "📈", "declining": "📉", "stable": "➡️"}
-#             st.metric("Conversion Trend", trend_emoji.get(conv_trend, '➡️') + " " + conv_trend.title())
-        
-#         with col2:
-#             int_trend = trend_summary.get('interest', 'stable')
-#             st.metric("Interest Trend", trend_emoji.get(int_trend, '➡️') + " " + int_trend.title())
-        
-#         with col3:
-#             total_months = trends.get('summary', {}).get('total_months_tracked', 0)
-#             st.metric("Months Tracked", total_months)
-        
-#         st.markdown("---")
-        
-#         # Monthly conversion trend
-#         monthly_conv = pd.DataFrame(trends.get('monthly_conversion', []))
-#         if not monthly_conv.empty:
-#             fig = px.line(
-#                 monthly_conv,
-#                 x='month',
-#                 y='conversion_rate',
-#                 title='Conversion Rate Trend Over Time',
-#                 markers=True
-#             )
-#             fig.update_traces(line_color='#667eea', line_width=3)
-#             st.plotly_chart(fig, use_container_width=True)
-        
-#         # Monthly interest trend
-#         col1, col2 = st.columns(2)
-        
-#         with col1:
-#             monthly_int = pd.DataFrame(trends.get('monthly_interest', []))
-#             if not monthly_int.empty:
-#                 fig = px.line(
-#                     monthly_int,
-#                     x='month',
-#                     y='avg_interest',
-#                     title='Interest Level Trend',
-#                     markers=True
-#                 )
-#                 fig.update_traces(line_color='#f093fb', line_width=3)
-#                 st.plotly_chart(fig, use_container_width=True)
-        
-#         with col2:
-#             interaction_freq = pd.DataFrame(trends.get('interaction_frequency', []))
-#             if not interaction_freq.empty:
-#                 fig = px.bar(
-#                     interaction_freq,
-#                     x='month',
-#                     y='interaction_count',
-#                     title='Interaction Frequency',
-#                     color='interaction_count',
-#                     color_continuous_scale='Greens'
-#                 )
-#                 st.plotly_chart(fig, use_container_width=True)
-        
-#         # Product trends
-#         product_trends = analytics.get('product_trends', [])
-#         if product_trends:
-#             st.markdown("### 📦 Product-Level Trends")
-            
-#             selected_product = st.selectbox(
-#                 "Select Product for Detailed Trend",
-#                 [p['product_name'] for p in product_trends]
-#             )
-            
-#             selected_data = next(
-#                 (p for p in product_trends if p['product_name'] == selected_product),
-#                 None
-#             )
-            
-#             if selected_data:
-#                 product_monthly = pd.DataFrame(selected_data['monthly_data'])
-                
-#                 if not product_monthly.empty:
-#                     fig = make_subplots(specs=[[{"secondary_y": True}]])
-                    
-#                     fig.add_trace(
-#                         go.Scatter(
-#                             x=product_monthly['month'],
-#                             y=product_monthly['conversion_rate'],
-#                             name="Conversion Rate",
-#                             line=dict(color='#667eea', width=3)
-#                         ),
-#                         secondary_y=False
-#                     )
-                    
-#                     fig.add_trace(
-#                         go.Scatter(
-#                             x=product_monthly['month'],
-#                             y=product_monthly['avg_interest'],
-#                             name="Interest Level",
-#                             line=dict(color='#f093fb', width=3)
-#                         ),
-#                         secondary_y=True
-#                     )
-                    
-#                     fig.update_layout(title=f"Trend: {selected_product}")
-#                     fig.update_xaxes(title_text="Month")
-#                     fig.update_yaxes(title_text="Conversion Rate", secondary_y=False)
-#                     fig.update_yaxes(title_text="Interest Level", secondary_y=True)
-                    
-#                     st.plotly_chart(fig, use_container_width=True)
-    
-#     else:
-#         st.info("Insufficient data for trend analysis")
-    
-#     # Territory Comparison
-#     if territory_comp and manager_view:
-#         st.markdown("## 🎯 Territory Comparison")
-        
-#         col1, col2 = st.columns(2)
-        
-#         with col1:
-#             st.markdown("### Doctor vs Territory Average")
-            
-#             doctor_metrics = territory_comp['doctor_metrics']
-#             territory_avg = territory_comp['territory_avg']
-            
-#             comparison_df = pd.DataFrame({
-#                 'Metric': ['Conversion Rate', 'Avg Interest'],
-#                 'Doctor': [doctor_metrics['conversion_rate'], doctor_metrics['avg_interest']],
-#                 'Territory Avg': [territory_avg['conversion_rate'], territory_avg['avg_interest']]
-#             })
-            
-#             fig = go.Figure()
-#             fig.add_trace(go.Bar(name='Doctor', x=comparison_df['Metric'], y=comparison_df['Doctor']))
-#             fig.add_trace(go.Bar(name='Territory Avg', x=comparison_df['Metric'], y=comparison_df['Territory Avg']))
-#             fig.update_layout(barmode='group', title="Performance Comparison")
-            
-#             st.plotly_chart(fig, use_container_width=True)
-        
-#         with col2:
-#             st.markdown("### Performance Delta")
-            
-#             perf_vs_avg = territory_comp['performance_vs_avg']
-            
-#             st.metric(
-#                 "Conversion vs Territory",
-#                 f"{doctor_metrics['conversion_rate']:.1%}",
-#                 f"{perf_vs_avg['conversion_diff']:+.1%}"
-#             )
-            
-#             st.metric(
-#                 "Interest vs Territory",
-#                 f"{doctor_metrics['avg_interest']:.2f}",
-#                 f"{perf_vs_avg['interest_diff']:+.2f}"
-#             )
-            
-#             st.metric(
-#                 "Percentile Rank",
-#                 f"{perf_vs_avg['percentile_rank']:.0f}th",
-#                 perf_vs_avg['performance_tier']
-#             )
-
-# ============================
-# TAB 3: Competitive Intelligence
-# ============================
-
-with tab3:
-    st.markdown("## ⚔️ Competitive Intelligence")
-    
-    if competitive:
-        threat_level = competitive.get('threat_level', 'low')
-        threat_score = competitive.get('competitor_threat_score', 0)
-        
-        # Threat level indicator
-        threat_colors = {
-            'high': '🔴',
-            'medium': '🟡',
-            'low': '🟢'
-        }
-        
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            st.metric(
-                "Threat Level",
-                f"{threat_colors.get(threat_level, '⚪')} {threat_level.upper()}",
-                f"{threat_score*100:.0f}% of objections"
-            )
-        
-        win_loss = competitive.get('win_loss_analysis', {})
-        
-        with col2:
-            st.metric("Win Rate", f"{win_loss.get('win_rate', 0):.0%}")
-        
-        with col3:
-            st.metric("Loss Rate", f"{win_loss.get('loss_rate', 0):.0%}")
-        
-        st.markdown("---")
-        
-        # Win/Loss/Neutral breakdown
-        col1, col2 = st.columns([1, 2])
-        
-        with col1:
-            st.markdown("### 📊 Outcome Distribution")
-            
-            outcome_df = pd.DataFrame({
-                'Outcome': ['Wins', 'Losses', 'Neutral'],
-                'Count': [win_loss.get('wins', 0), win_loss.get('losses', 0), win_loss.get('neutral', 0)]
-            })
-            
-            fig = px.pie(
-                outcome_df,
-                names='Outcome',
-                values='Count',
-                color='Outcome',
-                color_discrete_map={'Wins': '#4ade80', 'Losses': '#f87171', 'Neutral': '#94a3b8'}
-            )
-            st.plotly_chart(fig, use_container_width=True)
-        
-        with col2:
-            st.markdown("### 🎯 Products at Risk")
-            
-            products_at_risk = competitive.get('products_at_risk', [])
-            
-            if products_at_risk:
-                risk_df = pd.DataFrame(products_at_risk)
-                
-                fig = px.bar(
-                    risk_df,
-                    x='product_name',
-                    y='competitor_objections',
-                    color='risk_level',
-                    title="Competitor Objections by Product",
-                    color_discrete_map={'high': '#f87171', 'medium': '#fbbf24'}
-                )
-                st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.success("✅ No products currently at risk from competitors")
-        
-        # Competitive insights
-        st.markdown("### 💡 Competitive Insights")
-        insights = competitive.get('competitive_insights', 'No insights available')
-        st.info(insights)
-        
+def _get_product_limit(time_sec: int) -> int:
+    """Return number of products to show based on selected time."""
+    if time_sec <= 60:
+        return 1
+    elif time_sec <= 120:
+        return 3
     else:
-        st.info("No competitive data available")
+        return 5
 
-# ============================
-# TAB 4: Objection Resolution
-# ============================
 
-with tab4:
-    st.markdown("## ⚠️ Objection Resolution Tracker")
+# ─────────────────────────────────
+# DASHBOARD PAGE
+# ─────────────────────────────────
+def dashboard_page():
+    st.markdown('<div class="logo">patgpt</div>', unsafe_allow_html=True)
+    st.markdown('<div class="logo-sub">AI Sales Assistant · Pharma</div>', unsafe_allow_html=True)
+
+    # --- Load analytics if not already loaded (with defaults) ---
+    if st.session_state.analytics_data is None:
+        with st.spinner("Loading doctor data..."):
+            default_time = st.session_state.selected_time
+            default_emp = st.session_state.employee_type.lower().replace(" ", "_")
+            analytics = get_analytics(st.session_state.selected_doctor_id, default_time, default_emp)
+            if analytics:
+                st.session_state.analytics_data = analytics
+                st.session_state.submitted = True
+            else:
+                st.error("Could not load doctor data.")
+                if st.button("← Back"):
+                    st.session_state.page = "home"
+                    st.rerun()
+                return
+
+    analytics = st.session_state.analytics_data
+
+    # ── 1. DOCTOR CARD (always shown) ──
+    doc     = analytics.get("doctor_info", {})
+    eng     = analytics.get("engagement_metrics", {})
+    aida    = analytics.get("aida", {})
+    intent  = analytics.get("intent", {})
+    persona = analytics.get("persona", {})
+    reco    = analytics.get("recommendations", {})
+    nba     = analytics.get("next_best_action", {})
+    success = analytics.get("visit_success", {})
+    scoring = analytics.get("doctor_scoring", {})
+    obj_res = analytics.get("objection_resolution", {})
+
+    doctor_score = scoring.get("score", 0)
+    doctor_tier  = scoring.get("tier", "low")
+
+    specialty      = str(doc.get("specialty", "—")).replace("_", " ").title()
+    territory_name = str(doc.get("territory", "—")).title()
+    exp_years      = doc.get("experience_years", "—")
+    patient_load   = doc.get("patient_load", "—")
+    publications   = doc.get("publications_count", "—")
+    social_reach   = doc.get("social_media_reach", 0)
+
+    st.markdown(f"""
+    <div class="doc-hero">
+        <div class="doc-hero-name">👨‍⚕️ {html.escape(st.session_state.selected_doctor_name)}</div>
+        <div class="doc-hero-meta">{html.escape(specialty)} &nbsp;·&nbsp; {html.escape(territory_name)} Territory</div>
+        <div class="doc-hero-stats">
+            <div class="stat-box"><div class="stat-box-val">{patient_load}</div><div class="stat-box-lbl">Patients/mo</div></div>
+            <div class="stat-box"><div class="stat-box-val">{exp_years}y</div><div class="stat-box-lbl">Experience</div></div>
+            <div class="stat-box"><div class="stat-box-val">{publications}</div><div class="stat-box-lbl">Publications</div></div>
+            <div class="stat-box"><div class="stat-box-val">{social_reach:,}</div><div class="stat-box-lbl">Social</div></div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Doctor badge row (always shown)
+    tier_cls  = "badge-green" if doctor_tier == "high" else ("badge-yellow" if doctor_tier == "medium" else "badge-red")
+    tier_icon = "🌟" if doctor_tier == "high" else ("⚡" if doctor_tier == "medium" else "⚠️")
+    tier_text = doctor_tier.capitalize() + " Value"
+    intent_cls   = "badge-teal" if intent.get("intent_label") == "High Intent" else ("badge-amber" if "Moderate" in intent.get("intent_label", "") else "badge-slate")
+    persona_lbl  = persona.get("label", "—")
+    success_emoji = success.get("emoji", "🟡")
+    success_lbl   = success.get("label", "—")
+    success_pct   = success.get("probability_pct", "—")
+    success_cls   = "badge-teal" if success.get("probability", 0) >= 0.6 else ("badge-amber" if success.get("probability", 0) >= 0.35 else "badge-red")
+
+    st.markdown(f"""
+    <div class="badge-row">
+        <span class="badge {tier_cls}">{tier_icon} {tier_text}</span>
+        <span class="badge {intent_cls}">🎯 {html.escape(intent.get('intent_label', '—'))}</span>
+        <span class="badge badge-purple">{html.escape(persona_lbl)}</span>
+        <span class="badge {success_cls}">{success_emoji} {html.escape(success_lbl)} · {success_pct}</span>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── 2. ROLE SELECTION ──
+    st.markdown('<div class="section-label">👤 Your Role</div>', unsafe_allow_html=True)
+    emp_cols = st.columns(4)
+    emp_types = ["MR", "Area Manager", "VP", "GM"]
+    for i, et in enumerate(emp_types):
+        with emp_cols[i]:
+            if st.button(f"{'✅ ' if st.session_state.employee_type == et else ''}{et}", key=f"emp_{et}"):
+                st.session_state.employee_type = et
+
+    # ── 3. TIME SELECTION ──
+    st.markdown('<div class="section-label">⏱ Visit Duration</div>', unsafe_allow_html=True)
+    time_map = {
+        "20 sec": 20, "30 sec": 30, "1 min": 60, "2 min": 120, "5 min": 300,
+    }
+    selected_label = st.select_slider("", options=list(time_map.keys()), value="1 min")
+    selected_time = time_map[selected_label]
+
+    # ── 4. SUBMIT BUTTON ──
+    if st.button("Submit & Get Recommendations", use_container_width=True, type="primary"):
+        with st.spinner("Updating recommendations..."):
+            emp_type_param = st.session_state.employee_type.lower().replace(" ", "_")
+            new_analytics = get_analytics(st.session_state.selected_doctor_id, selected_time, emp_type_param)
+            if new_analytics:
+                st.session_state.analytics_data = new_analytics
+                st.session_state.selected_time = selected_time
+                st.session_state.submitted = True
+                st.rerun()
+            else:
+                st.error("Failed to refresh recommendations.")
+
+    # Ensure we have submitted state (first load default already set)
+    if not st.session_state.submitted:
+        st.info("Please select your role and visit duration, then click 'Submit & Get Recommendations'.")
+        return
+
+    # Use the updated analytics
+    analytics = st.session_state.analytics_data
+    reco = analytics.get("recommendations", {})
+    nba = analytics.get("next_best_action", {})
+    aida = analytics.get("aida", {})
+    intent = analytics.get("intent", {})
+    success = analytics.get("visit_success", {})
+    persona = analytics.get("persona", {})
+    obj_res = analytics.get("objection_resolution", {})
     
-    if objection_details and objection_details.get('has_objections'):
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.metric("Total Objections", objection_details.get('total_objections', 0))
-        
-        with col2:
-            overall_resolution = objection_details.get('overall_resolution_rate', 0)
-            st.metric("Overall Resolution Rate", f"{overall_resolution:.0%}")
-        
-        st.markdown("---")
-        
-        # Objection breakdown pie chart
-        col1 = st.columns([1, 1])[0]
-        
-        with col1:
-            st.markdown("### 📊 Objection Types")
-            
-            obj_breakdown = objection_details.get('objection_breakdown', {})
+        # ── 5. PRODUCT RECOMMENDATIONS (with time-based limit) ──
+    st.markdown('<div class="section-label">📦 Product Recommendations</div>', unsafe_allow_html=True)
+
+    primary_products  = reco.get("primary_products", [])
+    support_products  = reco.get("support_products", [])
+    closing_products  = reco.get("closing_products", [])
+    reminder_items    = reco.get("reminder_items", [])
+    mode              = reco.get("mode", "—")
+    event_active      = reco.get("event_active", False)
+    event_type        = reco.get("event_type", None)
+
+    # Flatten all recommended products in order
+    all_products = []
+    for p in primary_products:
+        all_products.append((p, "primary"))
+    for p in support_products:
+        all_products.append((p, "support"))
+    for p in closing_products:
+        all_products.append((p, "closing"))
+    for p in reminder_items:
+        all_products.append((p, "reminder"))
+
+    product_limit = _get_product_limit(st.session_state.selected_time)
+    limited_products = all_products[:product_limit]
+
+    mode_icon = {"ultra_short": "⚡", "short": "⏩", "medium": "⏱", "long": "🗓️"}.get(mode, "🎯")
+    mode_pill = f'<span class="badge badge-purple">{mode_icon} {mode.replace("_"," ").title()} Session</span>'
+    event_pill = f'<span class="badge badge-amber">🎉 {html.escape(str(event_type).title())} Event</span>' if event_active else ""
+    st.markdown(f'<div class="badge-row">{mode_pill}{event_pill}</div>', unsafe_allow_html=True)
+
+    if limited_products:
+        st.markdown('<div class="prod-panel"><div class="prod-panel-header">📋 Recommended Products · Top to Bottom</div>', unsafe_allow_html=True)
+        for rank, (prod, bucket) in enumerate(limited_products, start=1):
+            _render_product_card(prod, bucket, rank)
+        st.markdown("</div>", unsafe_allow_html=True)
+        if len(all_products) > product_limit:
+            st.caption(f"Showing top {product_limit} product(s) for {st.session_state.selected_time//60} min visit. Change duration and resubmit to see more.")
+    else:
+        st.info("No products to recommend for this visit duration.")
+
+    # Visit success probability bar (already shown in badge row, but keep standalone for visibility)
+    prob = success.get("probability", 0)
+    prob_pct = int(prob * 100)
+    prob_color = success.get("color", "#F59E0B")
+    st.markdown(f"""
+    <div class="success-bar-wrap">
+        <div class="success-bar-label">🔮 Visit Conversion Probability</div>
+        <div class="success-bar-row">
+            <div class="success-bar">
+                <div class="success-bar-fill" style="width:{prob_pct}%;background:{prob_color};"></div>
+            </div>
+            <div class="success-pct" style="color:{prob_color};">{prob_pct}%</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # AIDA stage bar
+    aida_stage      = aida.get("aida_stage", "awareness")
+    aida_idx        = aida.get("aida_stage_index", 0)
+    all_stages      = aida.get("all_stages", ["awareness", "interest", "desire", "action"])
+    stage_colors    = aida.get("stage_colors", {})
+    stage_labels    = aida.get("stage_labels", {})
+    stage_emojis    = aida.get("stage_emojis", {})
+    aida_color      = aida.get("aida_color", "#6C63FF")
+    aida_conf       = aida.get("aida_confidence", 0)
+    guidance        = aida.get("stage_guidance", {})
+
+    steps_html = ""
+    for i, s in enumerate(all_stages):
+        active = i == aida_idx
+        color  = stage_colors.get(s, "#64748B")
+        lbl    = stage_labels.get(s, s.capitalize())
+        emoji  = stage_emojis.get(s, "")
+        cls    = "aida-step-active" if active else "aida-step-inactive"
+        bg     = f"background:rgba({_hex_to_rgb(color)},0.15); color:{color}; border-color:{color}" if active else ""
+        steps_html += f"""
+        <div class="aida-step {cls}" style="{bg}">
+            <div class="aida-emoji">{emoji}</div>
+            <div class="aida-label">{html.escape(lbl)}</div>
+        </div>"""
+
+    st.markdown(f"""
+    <div class="aida-wrap">
+        <div class="aida-title">🧠 AIDA Sales Stage &nbsp;
+            <span style="font-size:0.75rem;color:#64748B;font-weight:400;">
+                {html.escape(aida.get('aida_label',''))} · {int(aida_conf*100)}% confidence
+            </span>
+        </div>
+        <div class="aida-bar">{steps_html}</div>
+        <div class="aida-guidance" style="border-color:{aida_color};">
+            <div class="aida-guidance-row">
+                <div class="aida-guidance-lbl">💬 What to say</div>
+                <div class="aida-guidance-val">{html.escape(guidance.get('what_to_say',''))}</div>
+            </div>
+            <div class="aida-guidance-row">
+                <div class="aida-guidance-lbl">📋 What to show</div>
+                <div class="aida-guidance-val">{html.escape(guidance.get('what_to_show',''))}</div>
+            </div>
+            <div class="aida-guidance-row">
+                <div class="aida-guidance-lbl">🚫 What to avoid</div>
+                <div class="aida-guidance-val">{html.escape(guidance.get('what_to_avoid',''))}</div>
+            </div>
+            <div class="aida-guidance-row">
+                <div class="aida-guidance-lbl">➡️ Next step</div>
+                <div class="aida-guidance-val">{html.escape(guidance.get('next_step',''))}</div>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Next Best Action
+    st.markdown('<div class="section-label">🚀 Next Best Action</div>', unsafe_allow_html=True)
+    st.markdown(f"""
+    <div class="nba-card">
+        <div class="nba-goal">Goal · {html.escape(nba.get('goal',''))}</div>
+        <div class="nba-action">{html.escape(nba.get('action',''))}</div>
+        <div><span class="nba-cta">👉 {html.escape(nba.get('cta',''))}</span></div>
+        <div class="nba-product">🎯 Focus product: {html.escape(nba.get('product_focus','—'))}</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── 6. CONVERSATION GUIDE (fixed HTML rendering) ──
+    st.markdown('<div class="section-label">🗣 Conversation Playbook</div>', unsafe_allow_html=True)
+    persona_approach = persona.get("approach", "Engage naturally based on doctor cues.")
+    persona_desc     = persona.get("description", "")
+
+    # Inline the conversation rows to avoid nested f-string issues (fixes div error)
+    convo_html = f"""
+    <div class="convo-wrap">
+        <div class="convo-title">🧭 How to Run This Visit</div>
+        <div class="convo-row">
+            <div class="convo-icon">💬</div>
+            <div><div class="convo-lbl">Your Opening</div><div class="convo-val">{html.escape(guidance.get('what_to_say', '—'))}</div></div>
+        </div>
+        <div class="convo-row">
+            <div class="convo-icon">📋</div>
+            <div><div class="convo-lbl">What to Show</div><div class="convo-val">{html.escape(guidance.get('what_to_show', '—'))}</div></div>
+        </div>
+        <div class="convo-row">
+            <div class="convo-icon">🚫</div>
+            <div><div class="convo-lbl">What to Avoid</div><div class="convo-val">{html.escape(guidance.get('what_to_avoid', '—'))}</div></div>
+        </div>
+        <div class="convo-row">
+            <div class="convo-icon">🎭</div>
+            <div><div class="convo-lbl">Doctor Persona</div><div class="convo-val">{html.escape(persona_lbl)}: {html.escape(persona_desc)}</div></div>
+        </div>
+        <div class="convo-row">
+            <div class="convo-icon">⚙️</div>
+            <div><div class="convo-lbl">Approach Style</div><div class="convo-val">{html.escape(persona_approach)}</div></div>
+        </div>
+        <div class="convo-row">
+            <div class="convo-icon">➡️</div>
+            <div><div class="convo-lbl">Close With</div><div class="convo-val">{html.escape(guidance.get('next_step', '—'))}</div></div>
+        </div>
+    </div>
+    """
+    st.markdown(convo_html, unsafe_allow_html=True)
+
+    # ── 7. EXPANDERS (full metrics) ──
+    st.markdown("<hr>", unsafe_allow_html=True)
+    with st.expander("📋 Full Engagement Metrics"):
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Conversion",     f"{eng.get('conversion_rate', 0):.0%}")
+        c2.metric("Avg Interest",   f"{eng.get('avg_interest_level', 0):.1f}/5")
+        c3.metric("Interactions",   eng.get("total_interactions", 0))
+        c4.metric("Follow-up Rate", f"{eng.get('follow_up_rate', 0):.0%}")
+
+    with st.expander("🔬 Intent Score Breakdown"):
+        comp = intent.get("components", {})
+        i1, i2, i3 = st.columns(3)
+        i1.metric("Interest",       f"{comp.get('interest_norm',0):.0%}")
+        i2.metric("Follow-up",      f"{comp.get('follow_up_rate',0):.0%}")
+        i3.metric("Recent Activity", f"{comp.get('recent_activity',0):.0%}")
+        st.write(f"**Overall Intent Score:** {intent.get('intent_score',0):.2f} — *{intent.get('pitch_aggression','balanced').capitalize()} pitch recommended*")
+
+    if obj_res and obj_res.get("has_objections"):
+        with st.expander("🛡️ Objection Intelligence"):
+            obj_breakdown = obj_res.get("objection_breakdown", {})
             if obj_breakdown:
-                obj_df = pd.DataFrame(
-                    list(obj_breakdown.items()),
-                    columns=['Objection', 'Count']
-                )
-                
-                fig = px.pie(
-                    obj_df,
-                    names='Objection',
-                    values='Count',
-                    hole=0.4
-                )
-                st.plotly_chart(fig, use_container_width=True)
-        
-        # Detailed table
-        st.markdown("### 📋 Detailed Objection Analysis")
-        resolution_data = objection_details.get('resolution_analysis', [])
-        if resolution_data:
-            res_display = pd.DataFrame(resolution_data)
-            res_display['overcome_rate'] = res_display['overcome_rate'].apply(lambda x: f"{x:.0%}")
-            res_display['follow_up_rate'] = res_display['follow_up_rate'].apply(lambda x: f"{x:.0%}")
-            
-            st.dataframe(res_display, use_container_width=True)
-        
-        # Recommendations
-        st.markdown("### 💡 Recommendations")
-        recommendations = objection_details.get('recommendations', [])
-        
-        if recommendations:
-            for rec in recommendations:
-                st.markdown(f"- {rec}")
-        else:
-            st.info("No specific recommendations at this time")
-        
-        # Persistent objections warning
-        persistent = objection_details.get('persistent_objections', [])
-        if persistent:
-            st.markdown("### 🚨 Persistent Objections (Need Escalation)")
-            
-            for obj in persistent:
-                st.warning(
-                    f"**{obj['objection_type'].upper()}** - Raised {obj['occurrence_count']} times, "
-                    f"only {obj['overcome_rate']:.0%} success rate"
-                )
-    
-    else:
-        st.success("✅ No objections recorded for this doctor")
+                for obj, count in list(obj_breakdown.items())[:5]:
+                    st.write(f"• **{obj}** — {count} occurrence(s)")
+            persistent = obj_res.get("persistent_objections", [])
+            if persistent:
+                st.warning("⚠️ Persistent: " + ", ".join([p["objection_type"] for p in persistent]))
 
-# ============================
-# TAB 5: AI Insights (Enhanced)
-# ============================
+    # ── Back button ──
+    st.markdown("<br>", unsafe_allow_html=True)
+    if st.button("← Back to Home"):
+        st.session_state.page = "home"
+        st.session_state.selected_territory   = None
+        st.session_state.selected_doctor_id   = None
+        st.session_state.selected_doctor_name = None
+        st.session_state.analytics_data = None
+        st.session_state.submitted = False
+        st.rerun()
 
-with tab1:
-    st.markdown("## 🤖 AI-Powered Insights")
 
-    if st.button("Generate AI Insights"):
-        with st.spinner("Generating..."):
-            insights = requests.get(f"{BASE_URL}/insights/doctor/{doctor_id}").json()
+# ─────────────────────────────────
+# UTILITY
+# ─────────────────────────────────
+def _hex_to_rgb(hex_color: str) -> str:
+    """Convert #RRGGBB to 'R,G,B' string for rgba()"""
+    h = hex_color.lstrip("#")
+    if len(h) == 6:
+        r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+        return f"{r},{g},{b}"
+    return "108,99,255"  # fallback purple
 
-            if not insights or "insights" not in insights:
-                st.error(insights)
-            else:
-                data = insights["insights"]
 
-                st.markdown("### Best Product to Promote")
-                st.write(data.get("best_product") or "No data")
-
-                st.markdown("### Similar Products")
-                st.write(data.get("similar_products") or "No data")
-
-                st.markdown("### Doctor Rating")
-                st.write(data.get("doctor_value") or "No data")
-
-                st.markdown("### Suggestion")
-                st.write(data.get("suggestion") or "No data")
-
-                st.markdown("### Trend")
-                st.write(data.get("trend_narrative") or "No data")
-
-# ============================
-# FOOTER
-# ============================
-
-st.markdown("---")
-st.caption("Enhanced Doctor Analytics Dashboard v2.0 | Powered by Azure OpenAI")
+# ─────────────────────────────────
+# ROUTING
+# ─────────────────────────────────
+if st.session_state.page == "home":
+    home_page()
+else:
+    dashboard_page()
