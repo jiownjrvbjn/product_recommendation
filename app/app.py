@@ -290,6 +290,14 @@ hr { border: none; border-top: 1px solid #1E293B; margin: 1.4rem 0; }
 
 /* Hide streamlit chrome */
 #MainMenu, footer { visibility: hidden; }
+
+/* Constrain content width for neat centred layout */
+.block-container {
+    max-width: 720px !important;
+    padding-left: 1.5rem !important;
+    padding-right: 1.5rem !important;
+    margin: 0 auto !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -480,7 +488,7 @@ def dashboard_page():
     st.markdown('<div class="logo">patgpt</div>', unsafe_allow_html=True)
     st.markdown('<div class="logo-sub">AI Sales Assistant · Pharma</div>', unsafe_allow_html=True)
 
-    # --- Load analytics if not already loaded (with defaults) ---
+    # --- Load analytics for doctor card on page entry (submitted stays False until user clicks Submit) ---
     if st.session_state.analytics_data is None:
         with st.spinner("Loading doctor data..."):
             default_time = st.session_state.selected_time
@@ -488,7 +496,7 @@ def dashboard_page():
             analytics = get_analytics(st.session_state.selected_doctor_id, default_time, default_emp)
             if analytics:
                 st.session_state.analytics_data = analytics
-                st.session_state.submitted = True
+                # Do NOT set submitted = True here — user must explicitly submit
             else:
                 st.error("Could not load doctor data.")
                 if st.button("← Back"):
@@ -556,7 +564,7 @@ def dashboard_page():
     # ── 2. ROLE SELECTION ──
     st.markdown('<div class="section-label">👤 Your Role</div>', unsafe_allow_html=True)
     emp_cols = st.columns(4)
-    emp_types = ["MR", "Area Manager", "VP", "GM"]
+    emp_types = ["Medical Representative", "Area Manager", "Vice President", "General Manager"]
     for i, et in enumerate(emp_types):
         with emp_cols[i]:
             if st.button(f"{'✅ ' if st.session_state.employee_type == et else ''}{et}", key=f"emp_{et}"):
@@ -585,7 +593,21 @@ def dashboard_page():
 
     # Ensure we have submitted state (first load default already set)
     if not st.session_state.submitted:
-        st.info("Please select your role and visit duration, then click 'Submit & Get Recommendations'.")
+        st.markdown("""
+        <div style="
+            background: rgba(108,99,255,0.08);
+            border: 1px solid rgba(108,99,255,0.25);
+            border-radius: 14px;
+            padding: 1.1rem 1.3rem;
+            margin-top: 0.5rem;
+            text-align: center;
+            color: #A78BFA;
+            font-size: 0.88rem;
+            font-weight: 500;
+        ">
+            👆 Select your role and visit duration above, then hit <strong>Submit</strong> to see recommendations.
+        </div>
+        """, unsafe_allow_html=True)
         return
 
     # Use the updated analytics
