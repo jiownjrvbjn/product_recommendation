@@ -9,6 +9,9 @@ AI Sales Assistant Engine with:
 - Structured product output (primary / support / closing / reminder)
 - Next Best Action engine
 - Visit Success Predictor
+- Doctor Rating formula from plan (patient_load, publications, social_reach, conv_rate)
+- Product Score formula from plan (conv_rate, avg_interest, follow_up, recent_trend)
+- Sales volume tracking, QoQ growth, territory/quarter filters
 - No auto employee mapping — employee_type comes from UI
 """
 
@@ -24,7 +27,7 @@ from datetime import datetime, timedelta
 class TrendAnalytics:
     def __init__(self, df: pd.DataFrame):
         self.df = df.copy()
-        self.df["interaction_date"] = pd.to_datetime(self.df["interaction_date"])
+        self.df["interaction_date"] = pd.to_datetime(self.df["interaction_date"], dayfirst=True, errors="coerce")
 
     def get_doctor_trends(self, doctor_id: str) -> Dict[str, Any]:
         doctor_df = self.df[self.df["doctor_id"].astype(str).str.strip() == str(doctor_id).strip()]
@@ -52,13 +55,21 @@ class TrendAnalytics:
         interaction_freq.columns = ["month", "interaction_count"]
         interaction_freq["month"] = interaction_freq["month"].astype(str)
 
+        # Monthly sales volume trend
+        monthly_sales = doctor_df.groupby("month")["sales_volume"].sum().reset_index() if "sales_volume" in doctor_df.columns else pd.DataFrame()
+        if not monthly_sales.empty:
+            monthly_sales.columns = ["month", "sales_volume"]
+            monthly_sales["month"] = monthly_sales["month"].astype(str)
+
         return {
             "monthly_conversion": monthly_conversion.to_dict(orient="records"),
             "monthly_interest": monthly_interest.to_dict(orient="records"),
             "interaction_frequency": interaction_freq.to_dict(orient="records"),
+            "monthly_sales": monthly_sales.to_dict(orient="records") if not monthly_sales.empty else [],
             "trends": {
                 "conversion": self._calc_trend(monthly_conversion["conversion_rate"].tolist()),
                 "interest": self._calc_trend(monthly_interest["avg_interest"].tolist()),
+                "sales": self._calc_trend(monthly_sales["sales_volume"].tolist()) if not monthly_sales.empty else "stable",
             },
         }
 
@@ -77,6 +88,19 @@ class TrendAnalytics:
             return "declining"
         return "stable"
 
+    def calc_recent_trend_score(self, monthly_conv_rates: List[float]) -> float:
+        """
+        Plan §7.2: recent_trend component for product score.
+        slope of last 3 months conv rates > 0 → +0.1, < 0 → -0.05
+        """
+        last3 = monthly_conv_rates[-3:] if len(monthly_conv_rates) >= 3 else monthly_conv_rates
+        if len(last3) < 2:
+            return 0.0
+        x = np.arange(len(last3))
+        y = np.array(last3, dtype=float)
+        slope = np.polyfit(x, y, 1)[0]
+        return 0.1 if slope > 0 else -0.05
+
 
 # ─────────────────────────────────────────────
 # COMPETITIVE INTELLIGENCE
@@ -84,7 +108,11 @@ class TrendAnalytics:
 class CompetitiveIntelligence:
     def __init__(self, df: pd.DataFrame):
         self.df = df.copy()
-        self.df["objection"] = self.df["objection"].astype(str).str.strip().str.lower()
+        if "objection" not in self.df.columns:
+            self.df["objection"] = self.df["objection_type"].astype(str).str.strip().str.lower() \
+                if "objection_type" in self.df.columns else "none"
+        else:
+            self.df["objection"] = self.df["objection"].astype(str).str.strip().str.lower()
         self.df["outcome"] = self.df["outcome"].astype(str).str.strip().str.lower()
 
     def get_competitive_analysis(self, doctor_id: str) -> Dict[str, Any]:
@@ -149,7 +177,12 @@ class ManagerComparison:
         terr_avg = np.mean(all_convs) if all_convs else 0
         pct_rank = (sum(1 for x in all_convs if x < doc_conv) / len(all_convs) * 100) if all_convs else 50
 
-        tier = "Top Performer" if pct_rank >= 75 else ("Above Average" if pct_rank >= 50 else ("Below Average" if pct_rank >= 25 else "Needs Attention"))
+        tier = (
+            "Top Performer" if pct_rank >= 75
+            else ("Above Average" if pct_rank >= 50
+            else ("Below Average" if pct_rank >= 25
+            else "Needs Attention"))
+        )
         return {
             "doctor_conversion": round(doc_conv, 3),
             "territory_avg_conversion": round(terr_avg, 3),
@@ -172,7 +205,8 @@ class ManagerComparison:
             spec_convs.append((d["outcome"] == "positive").sum() / len(d))
 
         spec_avg = np.mean(spec_convs) if spec_convs else 0
-        rank = sorted(spec_convs, reverse=True).index(doc_conv) + 1 if doc_conv in spec_convs else 0
+        sorted_convs = sorted(spec_convs, reverse=True)
+        rank = next((i + 1 for i, v in enumerate(sorted_convs) if abs(v - doc_conv) < 1e-6), 0)
 
         return {
             "specialty": specialty,
@@ -192,7 +226,14 @@ class ManagerComparison:
         for did in territory_df["doctor_id"].unique():
             d = territory_df[territory_df["doctor_id"] == did]
             conv = (d["outcome"] == "positive").sum() / len(d)
-            doctor_stats.append({"doctor_id": str(did), "conversion_rate": conv, "avg_interest": d["interest_level"].mean(), "total_interactions": len(d)})
+            sales = int(d["sales_volume"].sum()) if "sales_volume" in d.columns else 0
+            doctor_stats.append({
+                "doctor_id": str(did),
+                "conversion_rate": conv,
+                "avg_interest": d["interest_level"].mean(),
+                "total_interactions": len(d),
+                "total_sales_volume": sales,
+            })
 
         df_s = pd.DataFrame(doctor_stats)
         return {
@@ -200,7 +241,11 @@ class ManagerComparison:
             "total_doctors": len(doctor_stats),
             "avg_conversion_rate": round(df_s["conversion_rate"].mean(), 3),
             "avg_interest_level": round(df_s["avg_interest"].mean(), 2),
-            "top_performer": {"doctor_id": str(df_s.loc[df_s["conversion_rate"].idxmax(), "doctor_id"]), "conversion_rate": round(df_s["conversion_rate"].max(), 3)},
+            "total_sales_volume": int(df_s["total_sales_volume"].sum()),
+            "top_performer": {
+                "doctor_id": str(df_s.loc[df_s["conversion_rate"].idxmax(), "doctor_id"]),
+                "conversion_rate": round(df_s["conversion_rate"].max(), 3),
+            },
             "percentiles": {
                 "p25": round(df_s["conversion_rate"].quantile(0.25), 3),
                 "p50": round(df_s["conversion_rate"].quantile(0.50), 3),
@@ -215,7 +260,11 @@ class ManagerComparison:
 class ObjectionResolutionTracker:
     def __init__(self, df: pd.DataFrame):
         self.df = df.copy()
-        self.df["objection"] = self.df["objection"].astype(str).str.strip().str.lower()
+        if "objection" not in self.df.columns:
+            self.df["objection"] = self.df["objection_type"].astype(str).str.strip().str.lower() \
+                if "objection_type" in self.df.columns else "none"
+        else:
+            self.df["objection"] = self.df["objection"].astype(str).str.strip().str.lower()
         self.df["outcome"] = self.df["outcome"].astype(str).str.strip().str.lower()
         self.df["follow_up"] = self.df["follow_up"].astype(str).str.strip().str.lower()
 
@@ -224,7 +273,12 @@ class ObjectionResolutionTracker:
         if doctor_df.empty:
             return None
 
-        obj_df = doctor_df[doctor_df["objection"].notna() & (doctor_df["objection"] != "") & (doctor_df["objection"] != "nan")]
+        obj_df = doctor_df[
+            doctor_df["objection"].notna()
+            & (doctor_df["objection"] != "")
+            & (doctor_df["objection"] != "nan")
+            & (doctor_df["objection"] != "none")
+        ]
         if obj_df.empty:
             return {"has_objections": False, "total_objections": 0}
 
@@ -296,7 +350,6 @@ class AIDAClassifier:
         avg_interest = doctor_df["interest_level"].mean()
         follow_up_rate = (doctor_df["follow_up"] == "yes").sum() / max(interactions, 1)
 
-        # Determine stage
         if conversion_rate >= 0.5:
             stage = "action"
             confidence = min(0.95, 0.5 + conversion_rate * 0.45)
@@ -312,31 +365,30 @@ class AIDAClassifier:
 
         stage_idx = self.STAGES.index(stage)
 
-        # What to do at this stage
         stage_guidance = {
             "awareness": {
-                "what_to_say":  "Introduce your brand. Lead with a bold stat or unmet need. Keep it under 30 seconds.",
-                "what_to_show": "One-pager or product brief. Focus on awareness, not conversion.",
+                "what_to_say":   "Introduce your brand. Lead with a bold stat or unmet need. Keep it under 30 seconds.",
+                "what_to_show":  "One-pager or product brief. Focus on awareness, not conversion.",
                 "what_to_avoid": "Avoid pushing for prescriptions. Don't overwhelm with product range.",
-                "next_step":    "Leave a visual aid. Book a follow-up for a deeper session.",
+                "next_step":     "Leave a visual aid. Book a follow-up for a deeper session.",
             },
             "interest": {
-                "what_to_say":  "They're curious — feed it. Share clinical comparison data or differentiation vs. competitors.",
-                "what_to_show": "Clinical study summaries, comparison charts vs alternatives.",
+                "what_to_say":   "They're curious — feed it. Share clinical comparison data or differentiation vs. competitors.",
+                "what_to_show":  "Clinical study summaries, comparison charts vs alternatives.",
                 "what_to_avoid": "Avoid making it a one-way pitch. Invite questions.",
-                "next_step":    "Ask if they'd like to trial a sample. Set a follow-up with your medical team.",
+                "next_step":     "Ask if they'd like to trial a sample. Set a follow-up with your medical team.",
             },
             "desire": {
-                "what_to_say":  "Reinforce conviction. Use patient success stories and peer endorsements.",
-                "what_to_show": "Patient case studies, KOL endorsements, formulary approvals.",
+                "what_to_say":   "Reinforce conviction. Use patient success stories and peer endorsements.",
+                "what_to_show":  "Patient case studies, KOL endorsements, formulary approvals.",
                 "what_to_avoid": "Avoid discounting too early — they're already sold on value.",
-                "next_step":    "Push for a trial prescription or limited batch. Get a verbal commitment.",
+                "next_step":     "Push for a trial prescription or limited batch. Get a verbal commitment.",
             },
             "action": {
-                "what_to_say":  "Maintain momentum. Thank them, reinforce loyalty, upsell complementary products.",
-                "what_to_show": "Volume data, co-marketing opportunities, exclusive programs.",
+                "what_to_say":   "Maintain momentum. Thank them, reinforce loyalty, upsell complementary products.",
+                "what_to_show":  "Volume data, co-marketing opportunities, exclusive programs.",
                 "what_to_avoid": "Don't re-sell what they already believe in. Avoid overloading with new products.",
-                "next_step":    "Secure repeat orders. Introduce a second product from the portfolio.",
+                "next_step":     "Secure repeat orders. Introduce a second product from the portfolio.",
             },
         }
 
@@ -371,7 +423,7 @@ class IntentScoreEngine:
 
     def compute(self, doctor_df: pd.DataFrame) -> Dict[str, Any]:
         doctor_df = doctor_df.copy()
-        doctor_df["interaction_date"] = pd.to_datetime(doctor_df["interaction_date"])
+        doctor_df["interaction_date"] = pd.to_datetime(doctor_df["interaction_date"], dayfirst=True, errors="coerce")
         doctor_df["follow_up"] = doctor_df["follow_up"].astype(str).str.strip().str.lower()
 
         avg_interest = doctor_df["interest_level"].mean()
@@ -379,7 +431,6 @@ class IntentScoreEngine:
 
         follow_up_rate = (doctor_df["follow_up"] == "yes").sum() / max(len(doctor_df), 1)
 
-        # Recent activity: interactions in last 30 days relative to all
         latest = doctor_df["interaction_date"].max()
         recent = doctor_df[doctor_df["interaction_date"] >= (latest - timedelta(days=30))]
         recent_activity = len(recent) / max(len(doctor_df), 1)
@@ -423,7 +474,11 @@ class PersonaClassifier:
 
     def classify(self, doctor_df: pd.DataFrame, doctor_info: Dict) -> Dict[str, Any]:
         doctor_df = doctor_df.copy()
-        doctor_df["objection"] = doctor_df["objection"].astype(str).str.lower()
+        if "objection" not in doctor_df.columns:
+            doctor_df["objection"] = doctor_df["objection_type"].astype(str).str.lower() \
+                if "objection_type" in doctor_df.columns else "none"
+        else:
+            doctor_df["objection"] = doctor_df["objection"].astype(str).str.lower()
         doctor_df["outcome"] = doctor_df["outcome"].astype(str).str.lower()
 
         conversion = (doctor_df["outcome"] == "positive").sum() / max(len(doctor_df), 1)
@@ -436,36 +491,35 @@ class PersonaClassifier:
         )
         follow_up = (doctor_df["follow_up"].astype(str).str.lower() == "yes").sum() / max(len(doctor_df), 1)
 
-        # Persona scoring
         scores = {
-            "analytical":     publications * 0.4 + experience * 0.01 + (1 - conversion) * 0.3,
-            "emotional":      follow_up * 0.5 + avg_interest / 5 * 0.3 + (1 - publications / 50) * 0.2,
-            "fast_decision":  conversion * 0.5 + avg_interest / 5 * 0.3 + (1 - experience / 40) * 0.2,
-            "resistant":      (1 - conversion) * 0.4 + (1 - follow_up) * 0.3 + (0.3 if has_persistent_obj else 0),
+            "analytical":    publications * 0.4 + experience * 0.01 + (1 - conversion) * 0.3,
+            "emotional":     follow_up * 0.5 + avg_interest / 5 * 0.3 + (1 - publications / 50) * 0.2,
+            "fast_decision": conversion * 0.5 + avg_interest / 5 * 0.3 + (1 - experience / 40) * 0.2,
+            "resistant":     (1 - conversion) * 0.4 + (1 - follow_up) * 0.3 + (0.3 if has_persistent_obj else 0),
         }
 
         persona = max(scores, key=scores.get)
 
         descriptions = {
             "analytical": {
-                "label": "🔬 Analytical",
+                "label":       "🔬 Analytical",
                 "description": "Evidence-driven. Responds to data, clinical trials, and peer publications.",
-                "approach": "Lead with clinical evidence. Bring published studies. Avoid emotional appeals.",
+                "approach":    "Lead with clinical evidence. Bring published studies. Avoid emotional appeals.",
             },
             "emotional": {
-                "label": "❤️ Relationship-Driven",
+                "label":       "❤️ Relationship-Driven",
                 "description": "Values trust and relationship. Responds well to rapport and stories.",
-                "approach": "Build personal rapport first. Use patient success stories. Follow up consistently.",
+                "approach":    "Build personal rapport first. Use patient success stories. Follow up consistently.",
             },
             "fast_decision": {
-                "label": "⚡ Fast Decision Maker",
+                "label":       "⚡ Fast Decision Maker",
                 "description": "Decides quickly. Responds to clear value props and efficiency.",
-                "approach": "Get to the point fast. One clear CTA. No long pitches — respect their time.",
+                "approach":    "Get to the point fast. One clear CTA. No long pitches — respect their time.",
             },
             "resistant": {
-                "label": "🛡️ Resistant / Skeptical",
+                "label":       "🛡️ Resistant / Skeptical",
                 "description": "Hard to convert. Has persistent objections or competitor loyalty.",
-                "approach": "Don't push hard. Plant seeds. Address objections with data, not pressure.",
+                "approach":    "Don't push hard. Plant seeds. Address objections with data, not pressure.",
             },
         }
 
@@ -489,18 +543,18 @@ class NextBestActionEngine:
         goal = f"Move from {aida_stage.capitalize()} → {stage_transitions[aida_stage]}"
 
         action_map = {
-            ("awareness", "soft"):       ("Introduce brand briefly", "Leave a single visual aid or product brief"),
-            ("awareness", "balanced"):   ("Share a compelling product stat", "End with 'May I share more next visit?'"),
-            ("awareness", "aggressive"): ("Pitch one key product now", "Book a detailed follow-up before leaving"),
-            ("interest", "soft"):        ("Share clinical comparison data", "Ask open-ended questions about their patients"),
-            ("interest", "balanced"):    ("Position against competitor", "Ask: 'Would you like to trial this?'"),
-            ("interest", "aggressive"):  ("Push for trial prescription", "Offer a sample and set a follow-up date"),
-            ("desire", "soft"):          ("Reinforce with patient case study", "Ask: 'When can we start?'"),
-            ("desire", "balanced"):      ("Use KOL endorsement", "Push for prescription commitment"),
-            ("desire", "aggressive"):    ("Close with urgency", "Ask for immediate prescription commitment"),
-            ("action", "soft"):          ("Thank and maintain rapport", "Check satisfaction with current product"),
-            ("action", "balanced"):      ("Upsell a complementary product", "Share volume achievement milestones"),
-            ("action", "aggressive"):    ("Introduce second portfolio product", "Secure repeat orders proactively"),
+            ("awareness", "soft"):        ("Introduce brand briefly", "Leave a single visual aid or product brief"),
+            ("awareness", "balanced"):    ("Share a compelling product stat", "End with 'May I share more next visit?'"),
+            ("awareness", "aggressive"):  ("Pitch one key product now", "Book a detailed follow-up before leaving"),
+            ("interest",  "soft"):        ("Share clinical comparison data", "Ask open-ended questions about their patients"),
+            ("interest",  "balanced"):    ("Position against competitor", "Ask: 'Would you like to trial this?'"),
+            ("interest",  "aggressive"):  ("Push for trial prescription", "Offer a sample and set a follow-up date"),
+            ("desire",    "soft"):        ("Reinforce with patient case study", "Ask: 'When can we start?'"),
+            ("desire",    "balanced"):    ("Use KOL endorsement", "Push for prescription commitment"),
+            ("desire",    "aggressive"):  ("Close with urgency", "Ask for immediate prescription commitment"),
+            ("action",    "soft"):        ("Thank and maintain rapport", "Check satisfaction with current product"),
+            ("action",    "balanced"):    ("Upsell a complementary product", "Share volume achievement milestones"),
+            ("action",    "aggressive"):  ("Introduce second portfolio product", "Secure repeat orders proactively"),
         }
 
         aggression = "balanced" if intent_score >= 0.4 else "soft"
@@ -535,17 +589,11 @@ class VisitSuccessPredictor:
         probability = round(min(probability, 0.99), 3)
 
         if probability >= 0.6:
-            label = "High Chance"
-            color = "#10B981"
-            emoji = "🟢"
+            label, color, emoji = "High Chance", "#10B981", "🟢"
         elif probability >= 0.35:
-            label = "Moderate"
-            color = "#F59E0B"
-            emoji = "🟡"
+            label, color, emoji = "Moderate", "#F59E0B", "🟡"
         else:
-            label = "Low Chance"
-            color = "#EF4444"
-            emoji = "🔴"
+            label, color, emoji = "Low Chance", "#EF4444", "🔴"
 
         return {
             "probability": probability,
@@ -563,31 +611,44 @@ class RecommendationEngine:
     """
     3-Layer product selection:
       Layer 1 — AIDA filter (what products fit this stage)
-      Layer 2 — Score ranking
+      Layer 2 — Score ranking (plan §7.2 formula)
       Layer 3 — Time constraint (strict business rules)
 
-    Time rules (strict, no adjustments):
-      <= 30s  → 1 primary, 0 support
-      <= 60s  → 1 primary, 1 reminder
-      <= 120s → 3 primary, 1 support
-      else    → 5 primary, 2 support
+    Product score formula (plan §7.2):
+      score = 0.4 * conv_rate + 0.3 * (avg_interest/5) + 0.2 * follow_up_rate + 0.1 * recent_trend
+
+    Doctor score formula (plan §7.1):
+      score = 0.4*norm(patient_load,0,200) + 0.2*norm(publications,0,50)
+            + 0.2*norm(social_media_reach,0,10000) + 0.2*conversion_rate
     """
 
     AIDA_PRODUCT_FILTER = {
-        # Which product categories to prioritize per stage
-        "awareness":  ["high_interest_low_conversion", "potential"],
-        "interest":   ["potential", "high_interest_low_conversion"],
-        "desire":     ["high_performer", "potential"],
-        "action":     ["high_performer"],
+        "awareness": ["high_interest_low_conversion", "potential"],
+        "interest":  ["potential", "high_interest_low_conversion"],
+        "desire":    ["high_performer", "potential"],
+        "action":    ["high_performer"],
     }
 
     def __init__(self, df: pd.DataFrame):
         self.df = df
+        self._trend_engine = TrendAnalytics(df)
 
     def normalize(self, x, min_val, max_val):
         return (x - min_val) / (max_val - min_val + 1e-5)
 
-    # ── Layer 2: Score all products ──
+    def _get_product_recent_trend(self, doctor_df: pd.DataFrame, product: str) -> float:
+        """Compute recent_trend component for a product (plan §7.2)."""
+        p_df = doctor_df[doctor_df["product_name"] == product].copy()
+        p_df["interaction_date"] = pd.to_datetime(p_df["interaction_date"], dayfirst=True, errors="coerce")
+        p_df["month"] = p_df["interaction_date"].dt.to_period("M")
+        monthly = (
+            p_df.groupby("month")
+            .apply(lambda x: (x["outcome"] == "positive").sum() / len(x))
+            .tolist()
+        )
+        return self._trend_engine.calc_recent_trend_score(monthly)
+
+    # ── Layer 2: Score all products (plan §7.2 formula) ──
     def score_products(self, doctor_df: pd.DataFrame) -> Dict[str, Any]:
         results = []
         for product in doctor_df["product_name"].unique():
@@ -595,8 +656,19 @@ class RecommendationEngine:
             conversion = (p_df["outcome"] == "positive").sum() / max(len(p_df), 1)
             interest = p_df["interest_level"].mean()
             follow_up = (p_df["follow_up"].astype(str).str.lower() == "yes").sum() / max(len(p_df), 1)
+            recent_trend = self._get_product_recent_trend(doctor_df, product)
 
-            score = (0.5 * conversion) + (0.3 * (interest / 5)) + (0.2 * follow_up)
+            # Plan §7.2 formula
+            score = (
+                0.4 * conversion
+                + 0.3 * (interest / 5)
+                + 0.2 * follow_up
+                + 0.1 * recent_trend
+            )
+            score = round(max(score, 0.0), 3)
+
+            # Sales volume summary for this product
+            total_sales = int(p_df["sales_volume"].sum()) if "sales_volume" in p_df.columns else 0
 
             if interest >= 3.5 and conversion >= 0.5:
                 category = "high_performer"
@@ -608,12 +680,14 @@ class RecommendationEngine:
                 category = "potential"
 
             results.append({
-                "product_name": product,
-                "score": round(score, 3),
-                "conversion_rate": round(conversion, 2),
-                "avg_interest": round(interest, 2),
-                "follow_up_rate": round(follow_up, 2),
-                "category": category,
+                "product_name":     product,
+                "score":            score,
+                "conversion_rate":  round(conversion, 3),
+                "avg_interest":     round(interest, 2),
+                "follow_up_rate":   round(follow_up, 3),
+                "recent_trend":     recent_trend,
+                "total_sales_volume": total_sales,
+                "category":         category,
             })
 
         results.sort(key=lambda x: x["score"], reverse=True)
@@ -630,15 +704,14 @@ class RecommendationEngine:
                 low.append(r)
 
         return {
-            "recommended": recommended,
-            "secondary": secondary,
-            "low_performers": low,
+            "recommended":        recommended,
+            "secondary":          secondary,
+            "low_performers":     low,
             "all_products_ranked": results,
         }
 
     # ── Layer 1: AIDA filter ──
     def _aida_filter(self, products: List[Dict], aida_stage: str) -> List[Dict]:
-        """Reorder products by AIDA preference. Products matching preferred categories come first."""
         preferred_cats = self.AIDA_PRODUCT_FILTER.get(aida_stage, [])
         preferred = [p for p in products if p["category"] in preferred_cats]
         rest = [p for p in products if p["category"] not in preferred_cats]
@@ -675,11 +748,23 @@ class RecommendationEngine:
 
     def _identify_new_products_global(self, days_threshold: int = 30) -> set:
         df = self.df.copy()
-        latest = pd.to_datetime(df["interaction_date"]).max()
+        latest = pd.to_datetime(df["interaction_date"], dayfirst=True, errors="coerce").max()
         first_seen = df.groupby("product_name")["interaction_date"].min().reset_index()
-        first_seen["interaction_date"] = pd.to_datetime(first_seen["interaction_date"])
+        first_seen["interaction_date"] = pd.to_datetime(first_seen["interaction_date"], dayfirst=True, errors="coerce")
         first_seen["is_new"] = (latest - first_seen["interaction_date"]).dt.days <= days_threshold
         return set(first_seen[first_seen["is_new"]]["product_name"])
+
+    # ── Time allocation per product (plan §2.1) ──
+    def _allocate_time_per_product(self, products: List[Dict], total_time: int) -> List[Dict]:
+        """Proportional time allocation based on product score."""
+        if not products:
+            return products
+        total_score = sum(p["score"] for p in products) or 1
+        result = []
+        for p in products:
+            suggested_sec = max(10, int((p["score"] / total_score) * total_time))
+            result.append({**p, "suggested_duration_sec": suggested_sec})
+        return result
 
     # ── Main recommendation builder ──
     def build_recommendations(
@@ -710,6 +795,10 @@ class RecommendationEngine:
         remaining = aida_ordered[rules["primary_count"] + rules["support_count"] + rules["closing_count"]:]
         reminder  = remaining[: rules["reminder_count"]]
 
+        # Time allocation per product group
+        primary  = self._allocate_time_per_product(primary, effective_time)
+        support  = self._allocate_time_per_product(support, max(effective_time // 3, 10))
+
         return {
             "primary_products":  primary,
             "support_products":  support,
@@ -722,12 +811,16 @@ class RecommendationEngine:
             "total_pitched":     len(primary) + len(support) + len(closing),
         }
 
-    # ── Doctor score ──
+    # ── Doctor score (plan §7.1) ──
     def score_doctor(self, doctor_info: Dict) -> float:
-        patient_load  = self.normalize(doctor_info.get("patient_load", 0), 0, 100)
-        publications  = self.normalize(doctor_info.get("publications_count", 0), 0, 50)
-        social_reach  = self.normalize(doctor_info.get("social_media_reach", 0), 0, 10000)
-        conversion    = doctor_info.get("conversion_rate", 0)
+        """
+        doctor_score = 0.4*norm(patient_load,0,200) + 0.2*norm(publications,0,50)
+                     + 0.2*norm(social_reach,0,10000) + 0.2*conversion_rate
+        """
+        patient_load = self.normalize(doctor_info.get("patient_load", 0), 0, 200)
+        publications = self.normalize(doctor_info.get("publications_count", 0), 0, 50)
+        social_reach = self.normalize(doctor_info.get("social_media_reach", 0), 0, 10000)
+        conversion   = doctor_info.get("conversion_rate", 0)
         score = 0.4 * patient_load + 0.2 * publications + 0.2 * social_reach + 0.2 * conversion
         return round(score, 3)
 
@@ -745,15 +838,19 @@ class RecommendationEngine:
 class DoctorAnalyticsEnhanced:
     """
     Main analytics engine.
-    employee_type is NO LONGER auto-assigned — it must come from the UI.
+    employee_type is NOT auto-assigned — it must come from the UI.
+    Supports: actual_time_seconds, sales_volume, quarter, year columns.
     """
 
     def __init__(self, df: pd.DataFrame):
         self.df = df.copy()
         self.df.columns = self.df.columns.str.strip().str.lower()
-        self.df["territory"]    = self.df["territory"].astype(str).str.strip().str.lower()
-        self.df["doctor_name"]  = self.df["doctor_name"].astype(str).str.strip()
-        self.df["doctor_id"]    = self.df["doctor_id"].astype(str).str.strip()
+        self.df["territory"]   = self.df["territory"].astype(str).str.strip().str.lower()
+        self.df["doctor_name"] = self.df["doctor_name"].astype(str).str.strip()
+        self.df["doctor_id"]   = self.df["doctor_id"].astype(str).str.strip()
+        self.df["interaction_date"] = pd.to_datetime(
+            self.df["interaction_date"], dayfirst=True, errors="coerce"
+        )
 
         # Normalise interest_level if still string
         if self.df["interest_level"].dtype == object:
@@ -773,6 +870,12 @@ class DoctorAnalyticsEnhanced:
         }
         self.df["outcome"] = self.df["outcome"].map(outcome_map).fillna("neutral")
 
+        # Ensure numeric columns
+        for col in ["actual_time_seconds", "sales_volume", "patient_load",
+                    "experience_years", "publications_count", "social_media_reach"]:
+            if col in self.df.columns:
+                self.df[col] = pd.to_numeric(self.df[col], errors="coerce").fillna(0).astype(int)
+
         # Sub-engines
         self.reco_engine        = RecommendationEngine(self.df)
         self.trend_engine       = TrendAnalytics(self.df)
@@ -785,24 +888,51 @@ class DoctorAnalyticsEnhanced:
         self.nba_engine         = NextBestActionEngine()
         self.success_predictor  = VisitSuccessPredictor()
 
-    def get_doctor_summary(self, doctor_id: str, selected_time: int = 60, employee_type: str = "MR") -> Optional[Dict[str, Any]]:
+    # ── Time prediction (plan §7.3) ──
+    def predict_available_time(self, doctor_id: str) -> int:
+        """
+        predicted_time = median(last_5_actual_times).
+        If fewer than 5, use global average (120 sec).
+        """
+        if "actual_time_seconds" not in self.df.columns:
+            return 120
+        doc_df = self.df[self.df["doctor_id"] == str(doctor_id).strip()]
+        times = doc_df["actual_time_seconds"].dropna().tolist()
+        times = [t for t in times if t > 0]
+        if len(times) >= 5:
+            return int(np.median(times[-5:]))
+        global_avg = self.df["actual_time_seconds"]
+        global_avg = global_avg[global_avg > 0].mean()
+        return int(global_avg) if not np.isnan(global_avg) else 120
+
+    def get_doctor_summary(
+        self,
+        doctor_id: str,
+        selected_time: int = 60,
+        employee_type: str = "MR",
+        auto_predict_time: bool = False,
+    ) -> Optional[Dict[str, Any]]:
         doctor_df = self.df[self.df["doctor_id"].astype(str).str.strip() == str(doctor_id).strip()]
         if doctor_df.empty:
             return None
 
         doctor_df = doctor_df.copy()
 
+        # Use time prediction if requested (plan §7.3)
+        if auto_predict_time:
+            selected_time = self.predict_available_time(doctor_id)
+
         # ── Basic info ──
         doctor_info = {
-            "doctor_id":         str(doctor_id),
-            "doctor_name":       doctor_df["doctor_name"].iloc[0],
-            "territory":         doctor_df["territory"].iloc[0],
-            "specialty":         doctor_df["specialty"].iloc[0],
-            "patient_load":      int(doctor_df["patient_load"].iloc[0]),
-            "experience_years":  int(doctor_df["experience_years"].iloc[0]),
+            "doctor_id":          str(doctor_id),
+            "doctor_name":        doctor_df["doctor_name"].iloc[0],
+            "territory":          doctor_df["territory"].iloc[0],
+            "specialty":          doctor_df["specialty"].iloc[0],
+            "patient_load":       int(doctor_df["patient_load"].iloc[0]),
+            "experience_years":   int(doctor_df["experience_years"].iloc[0]),
             "publications_count": int(doctor_df["publications_count"].iloc[0]),
             "social_media_reach": int(doctor_df["social_media_reach"].iloc[0]),
-            "conversion_rate":   round((doctor_df["outcome"] == "positive").sum() / max(len(doctor_df), 1), 3),
+            "conversion_rate":    round((doctor_df["outcome"] == "positive").sum() / max(len(doctor_df), 1), 3),
         }
 
         # ── Engagement ──
@@ -811,6 +941,8 @@ class DoctorAnalyticsEnhanced:
             "avg_interest_level": round(doctor_df["interest_level"].mean(), 2),
             "conversion_rate":    round((doctor_df["outcome"] == "positive").sum() / max(len(doctor_df), 1), 3),
             "follow_up_rate":     round((doctor_df["follow_up"].astype(str).str.lower() == "yes").sum() / max(len(doctor_df), 1), 3),
+            "total_sales_volume": int(doctor_df["sales_volume"].sum()) if "sales_volume" in doctor_df.columns else 0,
+            "avg_meeting_duration_sec": int(doctor_df["actual_time_seconds"].mean()) if "actual_time_seconds" in doctor_df.columns else None,
         }
 
         # ── AIDA ──
@@ -822,7 +954,7 @@ class DoctorAnalyticsEnhanced:
         # ── Persona ──
         persona = self.persona_classifier.classify(doctor_df, doctor_info)
 
-        # ── Doctor score / tier ──
+        # ── Doctor score / tier (plan §7.1) ──
         doctor_score = self.reco_engine.score_doctor(doctor_info)
         doctor_tier  = self.reco_engine.classify_doctor_tier(doctor_score)
 
@@ -859,45 +991,54 @@ class DoctorAnalyticsEnhanced:
         for p in doctor_df["product_name"].unique():
             p_df = doctor_df[doctor_df["product_name"] == p]
             product_list.append({
-                "product_name":   p,
-                "avg_interest":   round(p_df["interest_level"].mean(), 2),
+                "product_name":    p,
+                "avg_interest":    round(p_df["interest_level"].mean(), 2),
                 "conversion_rate": round((p_df["outcome"] == "positive").sum() / max(len(p_df), 1), 3),
                 "times_presented": len(p_df),
+                "total_sales_volume": int(p_df["sales_volume"].sum()) if "sales_volume" in p_df.columns else 0,
             })
 
         # ── Objection ──
-        objection_analysis = {
-            "total_objections": int(doctor_df["objection"].notna().sum()),
-            "objection_breakdown": doctor_df["objection"].dropna().value_counts().to_dict(),
-            "has_objections": bool(doctor_df["objection"].notna().any()),
-        }
+        obj_col = "objection" if "objection" in doctor_df.columns else \
+                  ("objection_type" if "objection_type" in doctor_df.columns else None)
+        if obj_col:
+            obj_series = doctor_df[obj_col].astype(str).str.strip().str.lower()
+            valid_obj = obj_series[~obj_series.isin(["nan", "none", ""])]
+            objection_analysis = {
+                "total_objections":    int(valid_obj.notna().sum()),
+                "objection_breakdown": valid_obj.value_counts().to_dict(),
+                "has_objections":      bool(len(valid_obj) > 0),
+            }
+        else:
+            objection_analysis = {"total_objections": 0, "objection_breakdown": {}, "has_objections": False}
 
         # ── Deep analytics ──
-        trends              = self.trend_engine.get_doctor_trends(doctor_id)
-        competitive         = self.competitive_engine.get_competitive_analysis(doctor_id)
+        trends               = self.trend_engine.get_doctor_trends(doctor_id)
+        competitive          = self.competitive_engine.get_competitive_analysis(doctor_id)
         territory_comparison = self.manager_engine.compare_doctor_to_territory(doctor_id, doctor_info["territory"])
         specialty_comparison = self.manager_engine.get_specialty_comparison(doctor_id)
-        objection_deep      = self.objection_engine.get_objection_analysis(doctor_id)
+        objection_deep       = self.objection_engine.get_objection_analysis(doctor_id)
 
         return {
             # Core
-            "doctor_info":       doctor_info,
+            "doctor_info":        doctor_info,
             "engagement_metrics": engagement,
             "product_performance": {"product_breakdown": product_list},
             "objection_analysis": objection_analysis,
             "session_time":       selected_time,
+            "predicted_time":     self.predict_available_time(doctor_id),
 
             # Behavioral intelligence
-            "aida":              aida,
-            "intent":            intent,
-            "persona":           persona,
-            "visit_success":     visit_success,
+            "aida":          aida,
+            "intent":        intent,
+            "persona":       persona,
+            "visit_success": visit_success,
 
             # Sales guidance
-            "next_best_action":  nba,
-            "recommendations":   recommendations,
+            "next_best_action": nba,
+            "recommendations":  recommendations,
 
-            # Doctor scoring (no employee auto-assignment)
+            # Doctor scoring (plan §7.1)
             "doctor_scoring": {
                 "score": doctor_score,
                 "tier":  doctor_tier,
@@ -905,11 +1046,11 @@ class DoctorAnalyticsEnhanced:
             "selected_employee_type": employee_type,
 
             # Deep analytics
-            "trend_analytics":       trends,
+            "trend_analytics":         trends,
             "competitive_intelligence": competitive,
-            "territory_comparison":  territory_comparison,
-            "specialty_comparison":  specialty_comparison,
-            "objection_resolution":  objection_deep,
+            "territory_comparison":    territory_comparison,
+            "specialty_comparison":    specialty_comparison,
+            "objection_resolution":    objection_deep,
         }
 
     def get_territory_overview(self, territory: str) -> Optional[Dict[str, Any]]:
@@ -928,12 +1069,20 @@ class DoctorAnalyticsEnhanced:
         for did in territory_df["doctor_id"].unique():
             d = territory_df[territory_df["doctor_id"] == did]
             conv = (d["outcome"] == "positive").sum() / max(len(d), 1)
-            doctors.append({
-                "doctor_id":         str(did),
-                "doctor_name":       d["doctor_name"].iloc[0],
-                "specialty":         d["specialty"].iloc[0],
+            doc_info = {
+                "patient_load":      int(d["patient_load"].iloc[0]),
+                "publications_count": int(d["publications_count"].iloc[0]),
+                "social_media_reach": int(d["social_media_reach"].iloc[0]),
                 "conversion_rate":   round(conv, 3),
-                "avg_interest":      round(d["interest_level"].mean(), 2),
-                "total_interactions": len(d),
+            }
+            doctors.append({
+                "doctor_id":           str(did),
+                "doctor_name":         d["doctor_name"].iloc[0],
+                "specialty":           d["specialty"].iloc[0],
+                "conversion_rate":     round(conv, 3),
+                "avg_interest":        round(d["interest_level"].mean(), 2),
+                "total_interactions":  len(d),
+                "total_sales_volume":  int(d["sales_volume"].sum()) if "sales_volume" in d.columns else 0,
+                "doctor_score":        self.reco_engine.score_doctor(doc_info),
             })
         return sorted(doctors, key=lambda x: x["conversion_rate"], reverse=True)
