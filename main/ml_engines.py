@@ -201,7 +201,7 @@ Provide 1-2 actionable sentences.
                         {"role": "system", "content": "You are a concise pharmaceutical sales assistant."},
                         {"role": "user", "content": prompt},
                     ],
-                    temperature=0.7,
+                    temperature=1,
                     max_completion_tokens=200,
                 )
                 llm_suggestion = response.choices[0].message.content

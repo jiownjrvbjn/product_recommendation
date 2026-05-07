@@ -113,6 +113,34 @@ def get_employee_report(employee_id=None, territory=None):
     except Exception as e:
         return None
 
+def get_doctor_analytics(doctor_id: str, time_sec: int, employee_type: str):
+    try:
+        r = requests.get(
+            f"{BASE_URL}/analytics/doctor/{doctor_id}",
+            params={"time_sec": time_sec, "employee_type": employee_type},
+        )
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        st.error(f"Could not fetch doctor analytics: {e}")
+        return None
+
+def get_meeting_playbook(doctor_id: str, time_sec: int, employee_type: str):
+    try:
+        r = requests.get(
+            f"{BASE_URL}/llm/meeting_playbook/{doctor_id}",
+            params={"time_sec": time_sec, "employee_type": employee_type},
+            timeout=30
+        )
+        if r.status_code == 503:
+            return "❌ AI service is currently unavailable. Please check server logs."
+        r.raise_for_status()
+        return r.json().get("playbook", "")
+    except requests.exceptions.ConnectionError:
+        return "❌ Cannot connect to backend server. Is it running?"
+    except Exception as e:
+        return f"❌ Error: {str(e)}"
+
 def sales_assistant_section():
     st.header("Sales Assistant")
     if "ps_data" not in st.session_state:
@@ -154,77 +182,71 @@ def sales_assistant_section():
     if not st.session_state.ps_doctor_id:
         return
 
-    emp_types = ["mr", "area manager", "vp", "general manager"]
-    st.selectbox("Your Role", emp_types, index=emp_types.index(st.session_state.ps_employee_type),
-                 key="ps_role_select", on_change=lambda: setattr(st.session_state, 'ps_employee_type', st.session_state.ps_role_select))
-
-    time_map = {"20 sec": 20, "30 sec": 30, "1 min": 60, "2 min": 120, "5 min": 300}
-    selected_time_label = st.select_slider("Visit Duration", options=list(time_map.keys()), value="1 min", key="ps_time_slider")
-    st.session_state.ps_selected_time = time_map[selected_time_label]
-
-    if st.button("Submit & Get Recommendations", type="primary"):
-        with st.spinner("Loading..."):
-            data = get_product_suggestions(
+    # Auto-load doctor card when doctor and role are selected
+    if st.session_state.ps_doctor_id and st.session_state.ps_employee_type:
+        with st.spinner("Loading doctor insights..."):
+            analytics = get_doctor_analytics(
                 st.session_state.ps_doctor_id,
                 st.session_state.ps_selected_time,
                 st.session_state.ps_employee_type,
             )
-            if data:
-                st.session_state.ps_data = data
-                st.session_state.ps_submitted = True
-                st.rerun()
+        if analytics:
+            st.session_state.doctor_analytics = analytics
+            st.session_state.last_meeting = analytics.get("last_meeting")
+            st.session_state.top_historical_products = analytics.get("top_historical_products", [])
+
+    # Display doctor card if analytics exist
+    if "doctor_analytics" in st.session_state and st.session_state.doctor_analytics:
+        da = st.session_state.doctor_analytics
+        doc_info = da.get("doctor_info", {})
+        engagement = da.get("engagement_metrics", {})
+        aida = da.get("aida", {})
+        scoring = da.get("doctor_scoring", {})
+
+        with st.container():
+            st.subheader(f"📋 Doctor Card: {doc_info.get('doctor_name')}")
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("Specialty", doc_info.get("specialty", "N/A"))
+            col2.metric("Patient Load", doc_info.get("patient_load", 0))
+            col3.metric("Total Interactions", engagement.get("total_interactions", 0))
+            col4.metric("Avg Time (sec)", engagement.get("avg_meeting_duration_sec", "N/A"))
+
+            col1.metric("Doctor Score", f"{scoring.get('score', 0):.2f}", scoring.get("tier", "").upper())
+            col2.metric("AIDA Stage", aida.get("aida_label", "Unknown"))
+
+            # Last meeting
+            lm = st.session_state.last_meeting
+            if lm and lm.get("date"):
+                with st.expander("🕒 Last Meeting Recap"):
+                    st.write(f"**Date:** {lm.get('date')}")
+                    st.write(f"**Product:** {lm.get('product')}")
+                    st.write(f"**Interest:** {lm.get('interest_level')}/5")
+                    st.write(f"**Outcome:** {lm.get('outcome')}")
+                    st.write(f"**Objection:** {lm.get('objection', 'none')}")
+                    st.write(f"**Duration:** {lm.get('actual_time_seconds')} sec")
+                    if lm.get("meeting_notes"):
+                        st.info(f"📝 Notes: {lm.get('meeting_notes')}")
             else:
-                st.error("Failed to load suggestions.")
+                st.caption("No recent meeting data.")
 
-    if not st.session_state.ps_submitted:
-        st.info("Select a doctor, role, and duration above, then click Submit.")
-        return
+            # Top 3 historical products
+            top_prods = st.session_state.top_historical_products
+            if top_prods:
+                with st.expander("🏆 Top 3 Historical Products (by total time)"):
+                    for p in top_prods:
+                        st.write(f"**{p['product_name']}** – {p['times_presented']} times, avg {p['avg_time_per_presentation']} sec")
 
-    data = st.session_state.ps_data
-    dr_rating = data.get("doctor_rating", {})
-    doc_name = data.get("doctor_name", "Unknown")
-    specialty = data.get("specialty", "").replace("_", " ").title()
-    score = dr_rating.get("score", 0)
-    tier = dr_rating.get("tier", "low")
-
-    st.subheader(f"Doctor: {doc_name}")
-    st.caption(f"{specialty} - Score: {score:.2f} ({tier.upper()})")
-
-    last_meet = data.get("last_meeting")
-    if last_meet:
-        with st.expander("Last Meeting Recap"):
-            st.write(f"Date: {last_meet.get('date','')}")
-            st.write(f"Product: {last_meet.get('product','')}")
-            st.write(f"Interest: {last_meet.get('interest_level','')}/5")
-            st.write(f"Outcome: {last_meet.get('outcome','')}")
-            st.write(f"Objection: {last_meet.get('objection','none')}")
-
-    products = data.get("products", [])
-    if products:
-        st.subheader(f"Top {len(products)} Product(s) for {data.get('effective_time','')} sec")
-        for idx, p in enumerate(products, 1):
-            dur = p.get("suggested_duration_sec", 0)
-            aida = p.get("aida_stage", "unknown")
-            score_val = p.get("score", 0)
-            st.write(f"{idx}. {p.get('product_name','')}  | Score: {score_val:.2%}  | Suggested: {dur}s  | AIDA: {aida}")
-    else:
-        st.info("No product recommendations found.")
-
-    rule_sugg = data.get("rule_based_suggestion", "")
-    if rule_sugg:
-        st.markdown(f"**Rule-Based Suggestion:** {rule_sugg}")
-
-    if st.button("Customize with AI"):
-        with st.spinner("Generating custom suggestion..."):
-            custom = get_custom_suggestion(
-                st.session_state.ps_doctor_id,
-                st.session_state.ps_selected_time,
-                st.session_state.ps_employee_type,
-            )
-            if custom:
-                st.success(custom)
-            else:
-                st.warning("AI suggestion not available, using rule-based.")
+        # Playbook button
+        if st.button("📖 Want an AI-powered meeting playbook?"):
+            with st.spinner("Generating AI playbook..."):
+                playbook = get_meeting_playbook(
+                    st.session_state.ps_doctor_id,
+                    st.session_state.ps_selected_time,
+                    st.session_state.ps_employee_type,
+                )
+            if playbook:
+                with st.expander("📘 AI Helping Playbook", expanded=True):
+                    st.markdown(playbook)
 
 
 def product_performance_section():

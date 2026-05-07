@@ -353,6 +353,85 @@ def llm_product_insight(product_name: str):
     )
     return JSONResponse(content={"product_name": product_name, "explanation": explanation})
 
+@app.get("/llm/meeting_playbook/{doctor_id}")
+def meeting_playbook(
+    doctor_id: str,
+    time_sec: int = Query(60, ge=1, le=3600),
+    employee_type: str = Query("mr"),
+):
+    if llm_engine is None:
+        raise HTTPException(status_code=503, detail="LLM engine not available")
+    
+    summary = analytics_engine.get_doctor_summary(
+        doctor_id=doctor_id,
+        selected_time=time_sec,
+        employee_type=employee_type,
+    )
+    if summary is None:
+        raise HTTPException(status_code=404, detail=f"Doctor '{doctor_id}' not found")
+    
+    # Build a focused prompt for the playbook
+    doctor_info = summary.get("doctor_info", {})
+    aida = summary.get("aida", {})
+    persona = summary.get("persona", {})
+    last_meeting = summary.get("last_meeting", {})
+    top_products = summary.get("top_historical_products", [])
+    objections = summary.get("objection_analysis", {}).get("objection_breakdown", {})
+    notes = last_meeting.get("meeting_notes", "No notes recorded")
+    
+    engagement = summary.get("engagement_metrics", {})
+    conv_rate = engagement.get("conversion_rate", 0) * 100
+    avg_duration_sec = engagement.get("avg_meeting_duration_sec", 0)
+    avg_duration_min = round(avg_duration_sec / 60, 1)
+
+    prompt = f"""
+...
+Conversion Rate: {conv_rate:.0f}%
+Average Meeting Duration: {avg_duration_min} minutes
+...
+"""
+    
+    prompt = f"""
+You are a pharma sales coach. Create a concise "Helping Playbook" for today's meeting.
+
+Doctor: {doctor_info.get('doctor_name')} (ID: {doctor_id})
+Specialty: {doctor_info.get('specialty')}
+AIDA Stage: {aida.get('aida_label', 'Unknown')} - {aida.get('stage_guidance', {}).get('what_to_say', '')}
+Persona: {persona.get('label', 'Unknown')} - {persona.get('approach', '')}
+
+Last Meeting (date {last_meeting.get('date', 'N/A')}):
+- Product: {last_meeting.get('product')}
+- Interest: {last_meeting.get('interest_level')}/5
+- Outcome: {last_meeting.get('outcome')}
+- Objection: {last_meeting.get('objection', 'none')}
+- Duration: {last_meeting.get('actual_time_seconds')} sec
+- Notes: {notes}
+
+Top 3 historically presented products (by total time):
+{chr(10).join([f"- {p['product_name']}: presented {p['times_presented']} times, avg {p['avg_time_per_presentation']} sec" for p in top_products])}
+
+Common objections: {', '.join(list(objections.keys())[:3]) if objections else 'none'}
+
+Your task: Write a short, actionable playbook for the MR/manager. Include:
+1. Opening line tailored to AIDA stage and persona.
+2. Two key talking points (tie to past objections/notes if any).
+3. Suggested product focus (choose from top products or new recommendation).
+4. A closing question to move the doctor forward.
+
+Format as bullet points. Keep it under 200 words.
+"""
+    
+    response = llm_engine.client.chat.completions.create(
+        model=llm_engine.deployment,
+        messages=[
+            {"role": "system", "content": "You are a concise pharmaceutical sales assistant."},
+            {"role": "user", "content": prompt},
+        ],
+        temperature=1,
+        max_completion_tokens=800,
+    )
+    
+    return {"playbook": response.choices[0].message.content}
 
 if __name__ == "__main__":
     import uvicorn

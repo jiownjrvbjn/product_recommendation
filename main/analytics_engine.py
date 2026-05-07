@@ -945,6 +945,28 @@ class DoctorAnalyticsEnhanced:
             "avg_meeting_duration_sec": int(doctor_df["actual_time_seconds"].mean()) if "actual_time_seconds" in doctor_df.columns else None,
         }
 
+        # Compute last meeting
+        latest = doctor_df.sort_values("interaction_date", ascending=False).iloc[0]
+        last_meeting = {
+            "date": str(latest["interaction_date"].date()) if pd.notna(latest["interaction_date"]) else None,
+            "product": latest.get("product_name", ""),
+            "interest_level": int(latest.get("interest_level", 0)),
+            "outcome": latest.get("outcome", ""),
+            "objection": latest.get("objection", "") if "objection" in latest else (latest.get("objection_type", "") if "objection_type" in latest else ""),
+            "actual_time_seconds": int(latest.get("actual_time_seconds", 0)),
+            "meeting_notes": latest.get("meeting_notes", "") if "meeting_notes" in latest else None,
+        }
+
+        # Compute top historical products (by total time spent)
+        if "actual_time_seconds" in doctor_df.columns:
+            product_time = doctor_df.groupby("product_name").agg(
+                times_presented=("interaction_id", "count"),
+                total_time_seconds=("actual_time_seconds", "sum"),
+            ).reset_index()
+            product_time["avg_time_per_presentation"] = (product_time["total_time_seconds"] / product_time["times_presented"]).round(1)
+            top_products_history = product_time.sort_values("total_time_seconds", ascending=False).head(3).to_dict(orient="records")
+        else:
+            top_products_history = []
         # ── AIDA ──
         aida = self.aida_classifier.classify(doctor_df)
 
@@ -1051,6 +1073,11 @@ class DoctorAnalyticsEnhanced:
             "territory_comparison":    territory_comparison,
             "specialty_comparison":    specialty_comparison,
             "objection_resolution":    objection_deep,
+            
+            # Historical top products
+            "top_historical_products": top_products_history,
+            # last meeting details
+            "last_meeting": last_meeting,
         }
 
     def get_territory_overview(self, territory: str) -> Optional[Dict[str, Any]]:
