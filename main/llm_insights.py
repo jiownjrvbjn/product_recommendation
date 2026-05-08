@@ -48,6 +48,78 @@ class LLMInsightsEngineEnhanced:
         }
 
     # ─────────────────────────────────────────────
+    # PUBLIC: meeting playbook
+    # ─────────────────────────────────────────────
+    def generate_meeting_playbook(self, summary: Dict[str, Any]) -> str:
+        """
+        Called only when user clicks 'Generate AI Playbook'.
+        Builds a concise, persona-aware meeting playbook from doctor summary data.
+        """
+        doctor_info  = summary.get("doctor_info", {})
+        aida         = summary.get("aida", {})
+        persona      = summary.get("persona", {})
+        last_meeting = summary.get("last_meeting", {})
+        top_products = summary.get("top_historical_products", [])
+        objections   = summary.get("objection_analysis", {}).get("objection_breakdown", {})
+        engagement   = summary.get("engagement_metrics", {})
+
+        notes           = last_meeting.get("meeting_notes") or "No notes recorded"
+        conv_rate       = engagement.get("conversion_rate", 0) * 100
+        avg_duration_min = round((engagement.get("avg_meeting_duration_sec") or 0) / 60, 1)
+
+        top_products_text = "\n".join([
+            f"- {p['product_name']}: presented {p['times_presented']} times, "
+            f"avg {p.get('avg_time_per_presentation', 0)} sec"
+            for p in top_products
+        ]) or "No historical product data"
+
+        common_objections = ", ".join(list(objections.keys())[:3]) if objections else "none"
+
+        prompt = f"""
+You are a pharma sales coach. Create a concise "Meeting Playbook" for today's visit.
+
+Doctor: {doctor_info.get('doctor_name')} (ID: {doctor_info.get('doctor_id')})
+Specialty: {doctor_info.get('specialty')}
+AIDA Stage: {aida.get('aida_label', 'Unknown')} — {aida.get('stage_guidance', {}).get('what_to_say', '')}
+Persona: {persona.get('label', 'Unknown')} — {persona.get('approach', '')}
+
+Engagement:
+- Conversion Rate: {conv_rate:.0f}%
+- Avg Meeting Duration: {avg_duration_min} min
+
+Last Meeting (date {last_meeting.get('date', 'N/A')}):
+- Product: {last_meeting.get('product', '—')}
+- Interest: {last_meeting.get('interest_level', 0)}/5
+- Outcome: {last_meeting.get('outcome', '—')}
+- Objection: {last_meeting.get('objection') or 'none'}
+- Duration: {last_meeting.get('actual_time_seconds', 0)} sec
+- Notes: {notes}
+
+Top historically presented products (by time spent):
+{top_products_text}
+
+Common objections: {common_objections}
+
+Your task: Write a short, actionable playbook for the MR/manager. Include:
+1. Opening line tailored to the AIDA stage and persona.
+2. Two key talking points (tie to past objections or meeting notes if present).
+3. Suggested product focus (choose from top products above).
+4. A closing question to move the doctor forward in the funnel.
+
+Format as bullet points. Keep it under 200 words.
+"""
+        response = self.client.chat.completions.create(
+            model=self.deployment,
+            messages=[
+                {"role": "system", "content": "You are a concise pharmaceutical sales assistant."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=1,
+            max_completion_tokens=800,
+        )
+        return response.choices[0].message.content or "Unable to generate playbook."
+
+    # ─────────────────────────────────────────────
     # PUBLIC: product underperformance (plan §5)
     # ─────────────────────────────────────────────
     def explain_product_underperformance(

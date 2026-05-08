@@ -53,7 +53,7 @@ def load_data():
     df = pd.read_csv("data/doctor_sales_dummy_data.csv")
     df.columns = df.columns.str.strip().str.lower()
     for col in df.columns:
-        if df[col].dtype == object:
+        if pd.api.types.is_string_dtype(df[col]) or df[col].dtype == object:
             df[col] = df[col].astype(str).str.strip()
     missing = REQUIRED_COLUMNS - set(df.columns)
     if missing:
@@ -361,77 +361,75 @@ def meeting_playbook(
 ):
     if llm_engine is None:
         raise HTTPException(status_code=503, detail="LLM engine not available")
-    
+
     summary = analytics_engine.get_doctor_summary(
         doctor_id=doctor_id,
         selected_time=time_sec,
-        employee_type=employee_type,
+        employee_type=employee_type.strip().lower(),
     )
     if summary is None:
         raise HTTPException(status_code=404, detail=f"Doctor '{doctor_id}' not found")
-    
-    # Build a focused prompt for the playbook
-    doctor_info = summary.get("doctor_info", {})
-    aida = summary.get("aida", {})
-    persona = summary.get("persona", {})
-    last_meeting = summary.get("last_meeting", {})
-    top_products = summary.get("top_historical_products", [])
-    objections = summary.get("objection_analysis", {}).get("objection_breakdown", {})
-    notes = last_meeting.get("meeting_notes", "No notes recorded")
-    
-    engagement = summary.get("engagement_metrics", {})
-    conv_rate = engagement.get("conversion_rate", 0) * 100
-    avg_duration_sec = engagement.get("avg_meeting_duration_sec", 0)
-    avg_duration_min = round(avg_duration_sec / 60, 1)
 
-    prompt = f"""
-...
-Conversion Rate: {conv_rate:.0f}%
-Average Meeting Duration: {avg_duration_min} minutes
-...
-"""
-    
-    prompt = f"""
-You are a pharma sales coach. Create a concise "Helping Playbook" for today's meeting.
+    playbook = llm_engine.generate_meeting_playbook(summary)
+    return {"playbook": playbook}
 
-Doctor: {doctor_info.get('doctor_name')} (ID: {doctor_id})
-Specialty: {doctor_info.get('specialty')}
-AIDA Stage: {aida.get('aida_label', 'Unknown')} - {aida.get('stage_guidance', {}).get('what_to_say', '')}
-Persona: {persona.get('label', 'Unknown')} - {persona.get('approach', '')}
-
-Last Meeting (date {last_meeting.get('date', 'N/A')}):
-- Product: {last_meeting.get('product')}
-- Interest: {last_meeting.get('interest_level')}/5
-- Outcome: {last_meeting.get('outcome')}
-- Objection: {last_meeting.get('objection', 'none')}
-- Duration: {last_meeting.get('actual_time_seconds')} sec
-- Notes: {notes}
-
-Top 3 historically presented products (by total time):
-{chr(10).join([f"- {p['product_name']}: presented {p['times_presented']} times, avg {p['avg_time_per_presentation']} sec" for p in top_products])}
-
-Common objections: {', '.join(list(objections.keys())[:3]) if objections else 'none'}
-
-Your task: Write a short, actionable playbook for the MR/manager. Include:
-1. Opening line tailored to AIDA stage and persona.
-2. Two key talking points (tie to past objections/notes if any).
-3. Suggested product focus (choose from top products or new recommendation).
-4. A closing question to move the doctor forward.
-
-Format as bullet points. Keep it under 200 words.
-"""
-    
-    response = llm_engine.client.chat.completions.create(
-        model=llm_engine.deployment,
-        messages=[
-            {"role": "system", "content": "You are a concise pharmaceutical sales assistant."},
-            {"role": "user", "content": prompt},
-        ],
-        temperature=1,
-        max_completion_tokens=800,
-    )
-    
-    return {"playbook": response.choices[0].message.content}
+@app.get("/analytics/doctor/{doctor_id}/product_aida")
+def get_product_aida(
+    doctor_id: str,
+    time_sec: int = Query(60, ge=1, le=3600),
+    employee_type: str = Query("mr"),
+):
+    """
+    Returns per-product AIDA stage for the doctor's recommended products.
+    Classifies each product's interaction subset independently using AIDAClassifier,
+    then overlays score and interest data from the recommendation engine.
+    """
+    doctor_df = analytics_engine.df[
+        analytics_engine.df["doctor_id"].astype(str).str.strip() == str(doctor_id).strip()
+    ]
+    if doctor_df.empty:
+        raise HTTPException(status_code=404, detail=f"Doctor '{doctor_id}' not found")
+ 
+    # Score all products for this doctor
+    scored = analytics_engine.reco_engine.score_products(doctor_df)
+    aida_overall = analytics_engine.aida_classifier.classify(doctor_df)
+ 
+    # Get the top N recommended products (primary + support, capped at 3)
+    all_ranked = scored["all_products_ranked"][:5]  # limit lookup scope
+ 
+    product_aida_list = []
+    for p in all_ranked[:3]:
+        product_name = p["product_name"]
+        p_df = doctor_df[doctor_df["product_name"] == product_name]
+ 
+        if p_df.empty:
+            continue
+ 
+        # Classify AIDA on the product-specific interaction slice
+        p_aida = analytics_engine.aida_classifier.classify(p_df)
+ 
+        product_aida_list.append({
+            "product_name":    product_name,
+            "aida_stage":      p_aida["aida_stage"],
+            "aida_label":      p_aida["aida_label"],
+            "aida_color":      p_aida["aida_color"],
+            "aida_emoji":      p_aida["aida_emoji"],
+            "aida_confidence": p_aida["aida_confidence"],
+            "aida_signals":    p_aida["aida_signals"],
+            "stage_guidance":  p_aida["stage_guidance"],
+            # Product-level metrics for display
+            "conversion_rate": p["conversion_rate"],
+            "avg_interest":    p["avg_interest"],
+            "score":           p["score"],
+            "category":        p["category"],
+            "suggested_duration_sec": p.get("suggested_duration_sec", 0),
+        })
+ 
+    return JSONResponse(content={
+        "doctor_id":     doctor_id,
+        "overall_aida":  aida_overall["aida_label"],
+        "product_aida":  product_aida_list,
+    })
 
 if __name__ == "__main__":
     import uvicorn

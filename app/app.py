@@ -68,6 +68,17 @@ def get_product_suggestions(doctor_id, time_sec, employee_type):
     except Exception as e:
         return None
 
+def get_product_aida(doctor_id: str, time_sec: int, employee_type: str):
+    try:
+        r = requests.get(
+            f"{BASE_URL}/analytics/doctor/{doctor_id}/product_aida",
+            params={"time_sec": time_sec, "employee_type": employee_type},
+        )
+        r.raise_for_status()
+        return r.json()
+    except Exception:
+        return None
+
 def get_custom_suggestion(doctor_id, time_sec, employee_type):
     try:
         r = requests.get(
@@ -142,111 +153,392 @@ def get_meeting_playbook(doctor_id: str, time_sec: int, employee_type: str):
         return f"❌ Error: {str(e)}"
 
 def sales_assistant_section():
-    st.header("Sales Assistant")
-    if "ps_data" not in st.session_state:
-        st.session_state.ps_data = None
-    if "ps_doctor_id" not in st.session_state:
-        st.session_state.ps_doctor_id = None
-    if "ps_doctor_name" not in st.session_state:
-        st.session_state.ps_doctor_name = None
-    if "ps_employee_type" not in st.session_state:
-        st.session_state.ps_employee_type = "mr"
-    if "ps_selected_time" not in st.session_state:
-        st.session_state.ps_selected_time = 60
-    if "ps_submitted" not in st.session_state:
-        st.session_state.ps_submitted = False
-
+    st.header("🏥 Sales Assistant")
+ 
+    # ── Session state init ────────────────────────────────────────────────────
+    for key, default in [
+        ("ps_data",          None),
+        ("ps_doctor_id",     None),
+        ("ps_doctor_name",   None),
+        ("ps_employee_type", "mr"),
+        ("ps_selected_time", 60),
+        ("ps_submitted",     False),
+        ("doctor_analytics", None),
+        ("product_aida",     None),
+        ("playbook_shown",   False),
+        ("playbook_text",    ""),
+    ]:
+        if key not in st.session_state:
+            st.session_state[key] = default
+ 
+    # ── Step 1 — Territory + Doctor selector ─────────────────────────────────
     territories = get_territories()
     if not territories:
         st.warning("No territories found.")
         return
-
-    territory = st.selectbox("Select Territory", territories, index=None, placeholder="Choose a territory...")
-    if territory:
-        doctors = get_doctors_by_territory(territory)
-        if doctors:
-            doctor_options = {f"{d['doctor_name']} (ID: {d['doctor_id']})": d["doctor_id"] for d in doctors}
-            selected_label = st.selectbox(
-                "Select Doctor", list(doctor_options.keys()),
-                index=None, placeholder="Choose a doctor...",
-            )
-            if selected_label:
-                st.session_state.ps_doctor_id = str(doctor_options[selected_label]).strip()
-                st.session_state.ps_doctor_name = selected_label.split(" (ID:")[0]
+ 
+    col_t, col_d = st.columns(2)
+    with col_t:
+        territory = st.selectbox(
+            "📍 Select Territory",
+            territories,
+            index=None,
+            placeholder="Choose a territory...",
+        )
+    with col_d:
+        if territory:
+            doctors = get_doctors_by_territory(territory)
+            if doctors:
+                doctor_options = {
+                    f"{d['doctor_name']} (ID: {d['doctor_id']})": d["doctor_id"]
+                    for d in doctors
+                }
+                selected_label = st.selectbox(
+                    "👤 Select Doctor",
+                    list(doctor_options.keys()),
+                    index=None,
+                    placeholder="Choose a doctor...",
+                )
+                if selected_label:
+                    new_id   = str(doctor_options[selected_label]).strip()
+                    new_name = selected_label.split(" (ID:")[0]
+                    # Reset downstream state when doctor changes
+                    if new_id != st.session_state.ps_doctor_id:
+                        st.session_state.ps_doctor_id   = new_id
+                        st.session_state.ps_doctor_name = new_name
+                        st.session_state.doctor_analytics = None
+                        st.session_state.product_aida     = None
+                        st.session_state.playbook_shown   = False
+                        st.session_state.playbook_text    = ""
+                else:
+                    st.session_state.ps_doctor_id = None
             else:
-                st.session_state.ps_doctor_id = None
+                st.info("No doctors in this territory.")
+                return
         else:
-            st.info("No doctors in this territory.")
-            return
-
+            st.empty()
+ 
     if not st.session_state.ps_doctor_id:
         return
-
-    # Auto-load doctor card when doctor and role are selected
-    if st.session_state.ps_doctor_id and st.session_state.ps_employee_type:
-        with st.spinner("Loading doctor insights..."):
+ 
+    # ── Auto-load analytics when doctor selected ──────────────────────────────
+    if st.session_state.doctor_analytics is None:
+        with st.spinner("Loading doctor insights…"):
             analytics = get_doctor_analytics(
+                st.session_state.ps_doctor_id,
+                st.session_state.ps_selected_time,
+                st.session_state.ps_employee_type,
+            )
+            paida = get_product_aida(
                 st.session_state.ps_doctor_id,
                 st.session_state.ps_selected_time,
                 st.session_state.ps_employee_type,
             )
         if analytics:
             st.session_state.doctor_analytics = analytics
-            st.session_state.last_meeting = analytics.get("last_meeting")
-            st.session_state.top_historical_products = analytics.get("top_historical_products", [])
-
-    # Display doctor card if analytics exist
-    if "doctor_analytics" in st.session_state and st.session_state.doctor_analytics:
-        da = st.session_state.doctor_analytics
-        doc_info = da.get("doctor_info", {})
-        engagement = da.get("engagement_metrics", {})
-        aida = da.get("aida", {})
-        scoring = da.get("doctor_scoring", {})
-
-        with st.container():
-            st.subheader(f"📋 Doctor Card: {doc_info.get('doctor_name')}")
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric("Specialty", doc_info.get("specialty", "N/A"))
-            col2.metric("Patient Load", doc_info.get("patient_load", 0))
-            col3.metric("Total Interactions", engagement.get("total_interactions", 0))
-            col4.metric("Avg Time (sec)", engagement.get("avg_meeting_duration_sec", "N/A"))
-
-            col1.metric("Doctor Score", f"{scoring.get('score', 0):.2f}", scoring.get("tier", "").upper())
-            col2.metric("AIDA Stage", aida.get("aida_label", "Unknown"))
-
-            # Last meeting
-            lm = st.session_state.last_meeting
-            if lm and lm.get("date"):
-                with st.expander("🕒 Last Meeting Recap"):
-                    st.write(f"**Date:** {lm.get('date')}")
-                    st.write(f"**Product:** {lm.get('product')}")
-                    st.write(f"**Interest:** {lm.get('interest_level')}/5")
-                    st.write(f"**Outcome:** {lm.get('outcome')}")
-                    st.write(f"**Objection:** {lm.get('objection', 'none')}")
-                    st.write(f"**Duration:** {lm.get('actual_time_seconds')} sec")
-                    if lm.get("meeting_notes"):
-                        st.info(f"📝 Notes: {lm.get('meeting_notes')}")
-            else:
-                st.caption("No recent meeting data.")
-
-            # Top 3 historical products
-            top_prods = st.session_state.top_historical_products
-            if top_prods:
-                with st.expander("🏆 Top 3 Historical Products (by total time)"):
-                    for p in top_prods:
-                        st.write(f"**{p['product_name']}** – {p['times_presented']} times, avg {p['avg_time_per_presentation']} sec")
-
-        # Playbook button
-        if st.button("📖 Want an AI-powered meeting playbook?"):
-            with st.spinner("Generating AI playbook..."):
+            st.session_state.product_aida     = paida
+        else:
+            st.error("Could not load doctor data.")
+            return
+ 
+    da       = st.session_state.doctor_analytics
+    doc_info = da.get("doctor_info", {})
+    eng      = da.get("engagement_metrics", {})
+    scoring  = da.get("doctor_scoring", {})
+    aida     = da.get("aida", {})
+    reco     = da.get("recommendations", {})
+    lm       = da.get("last_meeting", {})
+    top_hist = da.get("top_historical_products", [])
+    paida    = st.session_state.product_aida or {}
+ 
+    st.divider()
+ 
+    # ══════════════════════════════════════════════════════════════════════════
+    # CARD 1 — Doctor Identity
+    # ══════════════════════════════════════════════════════════════════════════
+    st.markdown("**Doctor Profile**")
+    with st.container(border=True):
+        dr_name=doc_info.get('doctor_name', '—')
+        st.markdown(f"#### Dr. {dr_name}")
+        c1, c2, c3 = st.columns([1,1,1])
+ 
+        specialty = doc_info.get("specialty", "N/A")
+        c1.metric("Specialty", specialty)
+ 
+        total_interactions = eng.get("total_interactions", 0)
+        c2.metric("Total Interactions", total_interactions)
+ 
+        # Min & avg time in minutes (converted from seconds)
+        avg_sec = eng.get("avg_meeting_duration_sec") or 0
+        avg_min = round(avg_sec / 60, 1)
+ 
+        # Predicted / historical min time from top_hist avg_time
+        if top_hist:
+            all_avgs = [p.get("avg_time_per_presentation", 0) for p in top_hist]
+            min_sec  = min(all_avgs) if all_avgs else 0
+            min_min  = round(min_sec / 60, 1)
+        else:
+            min_min = "—"
+ 
+        with c3:
+            st.metric("Avg Time (min)", f"{avg_min} min")
+            st.caption(f"Min recorded: {min_min} min")
+ 
+    # ══════════════════════════════════════════════════════════════════════════
+    # CARD 2 — Doctor Rating
+    # ══════════════════════════════════════════════════════════════════════════
+    st.divider()
+    
+    with st.container(border=True):
+        st.markdown("#### Doctor Rating")   
+        rc1, rc2, rc3, rc4, rc5 = st.columns(5, gap="medium")
+ 
+        exp_years = doc_info.get("experience_years", 0)
+        rc1.metric("Experience", f"{exp_years} yrs")
+ 
+        patient_load = doc_info.get("patient_load", 0)
+        rc2.metric("Patient Load", f"{patient_load:,}")
+ 
+        followers = doc_info.get("social_media_reach", 0)
+        rc3.metric("Followers", f"{followers:,}")
+ 
+        publications = doc_info.get("publications_count", 0)
+        rc4.metric("Research Papers", publications)
+ 
+        conv_rate = eng.get("conversion_rate", 0)
+        rc5.metric("Conversion Rate", f"{(conv_rate * 100):.0f}%")
+ 
+        # Visual score bar
+        score     = scoring.get("score", 0)
+        tier      = scoring.get("tier", "low").upper()
+        tier_color = {"HIGH": "🟢", "MEDIUM": "🟡", "LOW": "🔴"}.get(tier, "⚪")
+        score_pct  = int(score * 100)
+ 
+        st.markdown(
+            f"""
+            <div style="margin-top:8px; margin-bottom:4px;">
+                <div style="display:flex;align-items:center;gap:10px;">
+                    <span style="font-size:13px;font-weight:600;min-width:90px;">
+                        {tier_color} {tier} TIER
+                    </span>
+                    <div style="flex:1;background:#e2e8f0;border-radius:8px;height:10px;overflow:hidden;">
+                        <div style="width:{score_pct}%;background:{'#10b981' if tier=='HIGH' else '#f59e0b' if tier=='MEDIUM' else '#ef4444'};
+                                    height:100%;border-radius:8px;transition:width 0.4s;"></div>
+                    </div>
+                    <span style="font-size:13px;color:#64748b;">{score:.2f} / 1.00</span>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+ 
+    # ══════════════════════════════════════════════════════════════════════════
+    # CARD 3 — Last Meeting + Top 3 Products
+    # ══════════════════════════════════════════════════════════════════════════
+    st.divider()
+    with st.container(border=True):
+        st.markdown("#### Meeting History & Top Products")
+        # Last meeting recap
+        if lm and lm.get("date"):
+            lm_col, _ = st.columns([3, 1])
+            with lm_col:
+                interest_stars = "⭐" * int(lm.get("interest_level", 0))
+                outcome_icon   = {"positive": "✅", "negative": "❌", "neutral": "⏳"}.get(
+                    lm.get("outcome", "neutral"), "⏳"
+                )
+                lm_time_min = round((lm.get("actual_time_seconds") or 0) / 60, 1)
+                st.markdown(
+                    f"""
+                    <div style="background:#f8fafc;border-left:4px solid #2748f1;
+                                padding:10px 14px;border-radius:6px;margin-bottom:12px;">
+                        <span style="font-size:12px;color:#2748f1;">🕒 Last Meeting — <b>{lm.get('date')}</b></span><br>
+                        <span style="font-size:14px; color:#1e293b;">
+                            <b>{lm.get('product', '—')}</b> &nbsp;·&nbsp;
+                            {outcome_icon} {lm.get('outcome','').title()} &nbsp;·&nbsp;
+                            {interest_stars} &nbsp;·&nbsp;
+                            ⏱ {lm_time_min} min
+                        </span>
+                        {f'<br><span style="font-size:12px;color:#64748b;">⚠ Objection: {lm.get("objection")}</span>' if lm.get("objection") and lm.get("objection") not in ("none","nan","") else ""}
+                        {f'<br><span style="font-size:12px;color:#475569;">📝 Notes: {html.escape(str(lm.get("meeting_notes","")))}</span>' if lm.get("meeting_notes") else ""}
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+        else:
+            st.caption("No previous meeting recorded.")
+ 
+        # Top 3 products the doctor liked (from historical data, by avg time)
+        st.markdown("**Top 3 Products This Doctor Engages With**")
+        if top_hist:
+            tp_cols = st.columns(min(len(top_hist), 3))
+            for idx, p in enumerate(top_hist[:3]):
+                prod_avg_min = round((p.get("avg_time_per_presentation") or 0) / 60, 1)
+                with tp_cols[idx]:
+                    st.markdown(
+                        f"""
+                        <div style="background:#f1f5f9;border-radius:10px;padding:12px;
+                                    text-align:center;border:1px solid #e2e8f0; margin-bottom:12px;">
+                            <div style="font-size:13px;font-weight:700;color:#1e293b;
+                                        margin-bottom:4px;">{p['product_name']}</div>
+                            <div style="font-size:12px;color:#64748b;">
+                                Presented <b>{p['times_presented']}×</b>
+                            </div>
+                            <div style="font-size:20px;font-weight:700;color:#6366f1;
+                                        margin:4px 0;">{prod_avg_min} <span style="font-size:12px;">min avg</span></div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+        else:
+            st.caption("No historical product data.")
+ 
+    # ══════════════════════════════════════════════════════════════════════════
+    # CARD 4 — AIDA per Product
+    # ══════════════════════════════════════════════════════════════════════════
+    st.divider()
+    primary_products = reco.get("primary_products", [])
+ 
+    with st.container(border=True):
+        st.markdown("#### AIDA Stage — Recommended Products")
+ 
+        # Doctor-level AIDA funnel (compact visual)
+        stage       = aida.get("aida_stage", "awareness")
+        stage_label = aida.get("aida_label", "Awareness")
+        aida_color  = aida.get("aida_color", "#64748B")
+        confidence  = int((aida.get("aida_confidence", 0)) * 100)
+        all_stages  = aida.get("all_stages", ["awareness", "interest", "desire", "action"])
+        stage_idx   = aida.get("aida_stage_index", 0)
+        stage_emojis = aida.get("stage_emojis", {
+            "awareness": "👁️", "interest": "🔍", "desire": "🔥", "action": "✅"
+        })
+        stage_labels_map = aida.get("stage_labels", {
+            "awareness": "Awareness", "interest": "Interest",
+            "desire": "Desire", "action": "Action"
+        })
+        stage_colors_map = aida.get("stage_colors", {
+            "awareness": "#64748B", "interest": "#F59E0B",
+            "desire": "#8B5CF6", "action": "#10B981"
+        })
+ 
+        # Funnel dots
+        funnel_html = '<div style="display:flex;gap:8px;align-items:center;margin-bottom:14px;">'
+        for i, s in enumerate(all_stages):
+            active     = i <= stage_idx
+            dot_color  = stage_colors_map.get(s, "#94a3b8") if active else "#e2e8f0"
+            font_color = "#fff" if active else "#94a3b8"
+            funnel_html += f"""
+                <div style="background:{dot_color};color:{font_color};border-radius:20px;
+                            padding:4px 12px;font-size:12px;font-weight:600;">
+                    {stage_emojis.get(s,'')} {stage_labels_map.get(s,'').upper()}
+                </div>"""
+            if i < len(all_stages) - 1:
+                funnel_html += '<span style="color:#cbd5e1;font-size:16px;">›</span>'
+        funnel_html += f'</div><p style="font-size:12px;color:#64748b;">Overall doctor stage — confidence <b>{confidence}%</b></p>'
+        st.markdown(funnel_html, unsafe_allow_html=True)
+ 
+        # Per-product AIDA cards from the new endpoint
+        product_aida_list = paida.get("product_aida", [])
+ 
+        if product_aida_list:
+            pa_cols = st.columns(min(len(product_aida_list), 3))
+            for idx, pa in enumerate(product_aida_list[:3]):
+                p_stage       = pa.get("aida_stage", "awareness")
+                p_label       = pa.get("aida_label", "Awareness")
+                p_color       = pa.get("aida_color", "#64748B")
+                p_emoji       = pa.get("aida_emoji", "👁️")
+                p_conv        = pa.get("conversion_rate", 0)
+                p_interest    = pa.get("avg_interest", 0)
+                p_confidence  = int(pa.get("aida_confidence", 0) * 100)
+                with pa_cols[idx]:
+                    st.markdown(
+                        f"""
+                        <div style="border:1px solid {p_color};border-radius:10px;
+                                    padding:12px;text-align:center;margin-bottom:12px;">
+                            <div style="font-size:13px;font-weight:700;
+                                        margin-bottom:6px;">{pa['product_name']}</div>
+                            <div style="background:{p_color};color:#fff;border-radius:16px;
+                                        padding:3px 10px;display:inline-block;
+                                        font-size:12px;font-weight:600;margin-bottom:6px;">
+                                {p_emoji} {p_label}
+                            </div>
+                            <div style="font-size:12px;color:#64748b;">
+                                Conv: <b>{p_conv:.0%}</b> &nbsp;·&nbsp;
+                                Interest: <b>{p_interest:.1f}/5</b>
+                            </div>
+                            <div style="font-size:11px;color:#94a3b8;margin-top:3px;">
+                                Confidence: {p_confidence}%
+                            </div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+        elif primary_products:
+            # Fallback: show primary products with overall AIDA if endpoint unavailable
+            pp_cols = st.columns(min(len(primary_products), 3))
+            for idx, p in enumerate(primary_products[:3]):
+                with pp_cols[idx]:
+                    st.markdown(
+                        f"""
+                        <div style="border:1px solid {aida_color};border-radius:10px;
+                                    padding:12px;text-align:center; margin-bottom:12px;">
+                            <div style="font-size:13px;font-weight:700;
+                                        margin-bottom:6px;">{p['product_name']}</div>
+                            <div style="background:{aida_color};color:#fff;border-radius:16px;
+                                        padding:3px 10px;display:inline-block;
+                                        font-size:12px;font-weight:600;margin-bottom:6px;">
+                                {aida.get('aida_emoji','👁️')} {stage_label}
+                            </div>
+                            <div style="font-size:12px;color:#64748b;">
+                                Conv: <b>{p.get('conversion_rate',0):.0%}</b> &nbsp;·&nbsp;
+                                Interest: <b>{p.get('avg_interest',0):.1f}/5</b>
+                            </div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+        else:
+            st.caption("No product recommendations available.")
+ 
+    # ══════════════════════════════════════════════════════════════════════════
+    # CARD 5 — AI Playbook CTA
+    # ══════════════════════════════════════════════════════════════════════════
+    st.divider()
+ 
+    with st.container(border=True):
+        st.markdown("#### Create Personalised AI Playbook?")
+        st.markdown(
+            f"""
+            Want a **personalised AI playbook** for today's meeting with
+            **Dr. {doc_info.get('doctor_name', '—')}**?
+ 
+            Based on their **{stage_label}** stage, persona, past objections, and top products —
+            the AI will generate an opening line, talking points, and a closing question
+            tailored for your visit today.
+            """
+        )
+ 
+        col_btn, col_note = st.columns([1, 3])
+        with col_btn:
+            generate = st.button(
+                "✨ Generate AI Playbook",
+                type="primary",
+                use_container_width=True,
+            )
+ 
+        if generate:
+            with st.spinner("Generating AI playbook…"):
                 playbook = get_meeting_playbook(
                     st.session_state.ps_doctor_id,
                     st.session_state.ps_selected_time,
                     st.session_state.ps_employee_type,
                 )
-            if playbook:
-                with st.expander("📘 AI Helping Playbook", expanded=True):
-                    st.markdown(playbook)
+            st.session_state.playbook_text  = playbook
+            st.session_state.playbook_shown = True
+ 
+        if st.session_state.playbook_shown and st.session_state.playbook_text:
+            st.markdown("---")
+            st.markdown("**📘 Today's Meeting Playbook**")
+            st.markdown(st.session_state.playbook_text)
 
 
 def product_performance_section():
