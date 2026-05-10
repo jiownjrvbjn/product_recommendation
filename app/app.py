@@ -9,63 +9,79 @@ Main menu (sidebar):
 import streamlit as st
 import requests
 import html
+import pandas as pd
 
 BASE_URL = "http://localhost:8000"
 
-st.set_page_config(
-    page_title="PatGPT",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
+st.set_page_config(page_title="PatGPT", layout="wide", initial_sidebar_state="expanded")
 
 @st.cache_data(ttl=300)
 def get_territories():
     try:
-        r = requests.get(f"{BASE_URL}/territories")
+        r = requests.get(f"{BASE_URL}/territories", timeout=10)
         r.raise_for_status()
         return r.json().get("territories", [])
-    except Exception as e:
-        st.error(f"Could not fetch territories: {e}")
+    except:
         return []
 
 @st.cache_data(ttl=300)
 def get_doctors_by_territory(territory: str):
     try:
-        r = requests.get(f"{BASE_URL}/doctors", params={"territory": territory})
+        r = requests.get(f"{BASE_URL}/doctors", params={"territory": territory}, timeout=10)
         r.raise_for_status()
         return r.json()
-    except Exception as e:
-        st.error(f"Could not fetch doctors: {e}")
+    except:
         return []
 
 @st.cache_data(ttl=300)
 def get_products():
     try:
-        r = requests.get(f"{BASE_URL}/products")
+        r = requests.get(f"{BASE_URL}/products", timeout=10)
         r.raise_for_status()
         return r.json().get("products", [])
-    except Exception as e:
+    except:
         return []
 
 @st.cache_data(ttl=300)
 def get_employees(territory=None):
     try:
         params = {"territory": territory} if territory else {}
-        r = requests.get(f"{BASE_URL}/employees", params=params)
+        r = requests.get(f"{BASE_URL}/employees", params=params, timeout=10)
         r.raise_for_status()
         return r.json()
-    except Exception as e:
+    except:
         return []
 
-def get_product_suggestions(doctor_id, time_sec, employee_type):
+def get_doctor_analytics(doctor_id, time_sec, employee_type):
     try:
-        r = requests.get(
-            f"{BASE_URL}/recommendations/product_suggestions",
-            params={"doctor_id": doctor_id, "time_sec": time_sec, "employee_type": employee_type},
-        )
+        r = requests.get(f"{BASE_URL}/analytics/doctor/{doctor_id}",
+                         params={"time_sec": time_sec, "employee_type": employee_type}, timeout=30)
         r.raise_for_status()
         return r.json()
-    except Exception as e:
+    except:
+        return None
+
+def get_meeting_playbook(doctor_id, time_sec, employee_type):
+    try:
+        r = requests.get(f"{BASE_URL}/llm/meeting_playbook/{doctor_id}",
+                         params={"time_sec": time_sec, "employee_type": employee_type}, timeout=30)
+        if r.status_code == 503:
+            return "❌ AI service unavailable."
+        r.raise_for_status()
+        return r.json().get("playbook", "")
+    except:
+        return "❌ Error generating playbook."
+
+def get_product_performance(product=None, region=None, quarter=None):
+    try:
+        params = {}
+        if product: params["product"] = product
+        if region: params["region"] = region
+        if quarter: params["quarter"] = quarter
+        r = requests.get(f"{BASE_URL}/analytics/product_performance", params=params, timeout=30)
+        r.raise_for_status()
+        return r.json()
+    except:
         return None
 
 def get_product_aida(doctor_id: str, time_sec: int, employee_type: str):
@@ -79,27 +95,13 @@ def get_product_aida(doctor_id: str, time_sec: int, employee_type: str):
     except Exception:
         return None
 
-def get_custom_suggestion(doctor_id, time_sec, employee_type):
+def get_region_matrix(quarter=None):
     try:
-        r = requests.get(
-            f"{BASE_URL}/suggestion/customize/{doctor_id}",
-            params={"time_sec": time_sec, "employee_type": employee_type},
-        )
-        r.raise_for_status()
-        return r.json().get("suggestion", "")
-    except Exception:
-        return None
-
-def get_product_performance(product=None, region=None, quarter=None):
-    try:
-        params = {}
-        if product: params["product"] = product
-        if region: params["region"] = region
-        if quarter: params["quarter"] = quarter
-        r = requests.get(f"{BASE_URL}/analytics/product_performance", params=params)
+        params = {"quarter": quarter} if quarter else {}
+        r = requests.get(f"{BASE_URL}/analytics/region_product_matrix", params=params, timeout=30)
         r.raise_for_status()
         return r.json()
-    except Exception as e:
+    except:
         return None
 
 def get_doctor_review(doctor_id=None, territory=None):
@@ -107,10 +109,18 @@ def get_doctor_review(doctor_id=None, territory=None):
         params = {}
         if doctor_id: params["doctor_id"] = doctor_id
         if territory: params["territory"] = territory
-        r = requests.get(f"{BASE_URL}/analytics/doctor_review", params=params)
+        r = requests.get(f"{BASE_URL}/analytics/doctor_review", params=params, timeout=30)
         r.raise_for_status()
         return r.json()
-    except Exception as e:
+    except:
+        return None
+
+def get_doctor_overview():
+    try:
+        r = requests.get(f"{BASE_URL}/analytics/doctor_overview", timeout=30)
+        r.raise_for_status()
+        return r.json()
+    except:
         return None
 
 def get_employee_report(employee_id=None, territory=None):
@@ -118,37 +128,17 @@ def get_employee_report(employee_id=None, territory=None):
         params = {}
         if employee_id: params["employee_id"] = employee_id
         if territory: params["territory"] = territory
-        r = requests.get(f"{BASE_URL}/analytics/employee_report", params=params)
+        r = requests.get(f"{BASE_URL}/analytics/employee_report", params=params, timeout=30)
         r.raise_for_status()
         return r.json()
-    except Exception as e:
+    except:
         return None
 
-def get_doctor_analytics(doctor_id: str, time_sec: int, employee_type: str):
+def get_llm_product_insight(product_name):
     try:
-        r = requests.get(
-            f"{BASE_URL}/analytics/doctor/{doctor_id}",
-            params={"time_sec": time_sec, "employee_type": employee_type},
-        )
+        r = requests.get(f"{BASE_URL}/llm/product_insight/{product_name}", timeout=30)
         r.raise_for_status()
-        return r.json()
-    except Exception as e:
-        st.error(f"Could not fetch doctor analytics: {e}")
-        return None
-
-def get_meeting_playbook(doctor_id: str, time_sec: int, employee_type: str):
-    try:
-        r = requests.get(
-            f"{BASE_URL}/llm/meeting_playbook/{doctor_id}",
-            params={"time_sec": time_sec, "employee_type": employee_type},
-            timeout=30
-        )
-        if r.status_code == 503:
-            return "❌ AI service is currently unavailable. Please check server logs."
-        r.raise_for_status()
-        return r.json().get("playbook", "")
-    except requests.exceptions.ConnectionError:
-        return "❌ Cannot connect to backend server. Is it running?"
+        return r.json().get("explanation", "No explanation available.")
     except Exception as e:
         return f"❌ Error: {str(e)}"
 
@@ -543,15 +533,15 @@ def sales_assistant_section():
 
 def product_performance_section():
     st.header("Product Performance")
+    products = get_products()
+    territories = get_territories()
     col_p, col_r, col_q = st.columns(3)
     with col_p:
-        products = get_products()
-        product_sel = st.selectbox("Product (optional)", ["Overall Summary"] + products)
+        product_sel = st.selectbox("Product", ["Overall Summary"] + products)
     with col_r:
-        territories = get_territories()
-        region_sel = st.selectbox("Region (optional)", ["All"] + territories)
+        region_sel = st.selectbox("Region", ["All"] + territories)
     with col_q:
-        quarter_sel = st.selectbox("Quarter (optional)", ["All", "Q1", "Q2", "Q3", "Q4"])
+        quarter_sel = st.selectbox("Quarter", ["All", "Q1", "Q2", "Q3", "Q4"])
 
     product_param = None if product_sel == "Overall Summary" else product_sel
     region_param = None if region_sel == "All" else region_sel
@@ -560,107 +550,169 @@ def product_performance_section():
     if st.button("Load Product Data", type="primary"):
         with st.spinner("Loading..."):
             data = get_product_performance(product=product_param, region=region_param, quarter=quarter_param)
-        if not data:
-            return
+            if not data:
+                st.error("No data available.")
+                return
 
         if product_param:
-            st.subheader(product_param)
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Total Sales", data.get("total_sales", 0))
-            m2.metric("Conversion", f"{data.get('conversion_rate', 0):.0%}")
-            m3.metric("Avg Interest", f"{data.get('avg_interest', 0):.1f}/5")
-            m4.metric("QoQ Growth", f"{data.get('qoq_growth', 0):.1%}")
-            tre = data.get("trend", "stable")
-            st.caption(f"Trend: {tre}")
-            obj = data.get("objection_breakdown", {})
-            if obj:
-                with st.expander("Objection Breakdown"):
-                    for k, v in sorted(obj.items(), key=lambda x: -x[1]):
-                        st.write(f"- {k}: {v}")
-        else:
-            summary = data.get("summary", [])
-            if summary:
-                import pandas as pd
-                df_s = pd.DataFrame(summary)
-                st.dataframe(df_s, use_container_width=True)
+            col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+            col_m1.metric("Total Sales", data.get("total_sales", 0))
+            col_m2.metric("Conv", f"{data.get('conversion_rate',0):.1%}")
+            col_m3.metric("Avg Interest", f"{data.get('avg_interest',0):.1f}/5")
+            col_m4.metric("QoQ Growth", f"{data.get('qoq_growth',0):.1%}")
+            st.caption(f"Trend: {data.get('trend','stable')}")
+
+            monthly = data.get("monthly_sales", [])
+            if monthly:
+                df_m = pd.DataFrame(monthly)
+                df_m["month"] = pd.to_datetime(df_m["month"])
+                df_m = df_m.set_index("month")
+                st.subheader("Monthly Sales Trend")
+                st.line_chart(df_m["sales_volume"])
+
             quarterly = data.get("quarterly_table", [])
             if quarterly:
-                with st.expander("Quarterly Sales"):
+                st.subheader("Quarterly Performance")
+                st.dataframe(pd.DataFrame(quarterly), use_container_width=True)
+
+            if data.get("is_underperforming"):
+                st.warning("⚠️ This product is underperforming.")
+                if st.button("Why is this product underperforming?"):
+                    with st.spinner("Generating insight..."):
+                        explanation = get_llm_product_insight(product_param)
+                        st.markdown(explanation)
+        else:
+            summary = data.get("summary", [])
+            quarterly = data.get("quarterly_table", [])
+            if summary:
+                st.subheader("Product Summary")
+                df_s = pd.DataFrame(summary)
+                st.dataframe(df_s, use_container_width=True)
+                st.subheader("Quarterly Sales")
+                if quarterly:
                     st.dataframe(pd.DataFrame(quarterly), use_container_width=True)
+                st.subheader("Region‑wise Heatmap")
+                matrix = get_region_matrix(quarter=quarter_param)
+                if matrix and matrix.get("matrix"):
+                    df_hm = pd.DataFrame(matrix["matrix"])
+                    if "region" in df_hm.columns:
+                        df_hm = df_hm.set_index("region")
+                        st.dataframe(df_hm.style.background_gradient(cmap="Blues"), use_container_width=True)
+                    else:
+                        st.info("No region data.")
+                else:
+                    st.info("No region matrix available.")
+            else:
+                st.info("No data found for the selected filters.")
 
 
 def doctor_review_section():
     st.header("Doctor Review")
-    col_t, col_d = st.columns(2)
-    with col_t:
-        territories = get_territories()
-        territory_sel = st.selectbox("Territory (optional)", ["All"] + territories, key="dr_territory")
-    with col_d:
-        territory_filter = None if territory_sel == "All" else territory_sel
-        doctors = get_doctors_by_territory(territory_filter) if territory_filter else []
-        doctor_opts = {f"{d['doctor_name']} ({d['doctor_id']})": d["doctor_id"] for d in doctors}
-        doctor_sel_label = st.selectbox("Doctor (optional)", ["All Doctors"] + list(doctor_opts.keys()), key="dr_doctor")
-    doctor_id_param = None if doctor_sel_label == "All Doctors" else doctor_opts.get(doctor_sel_label)
+    tab1, tab2 = st.tabs(["All Doctors", "Doctor Analysis"])
 
-    if st.button("Load Doctor Review", type="primary"):
-        with st.spinner("Loading..."):
-            data = get_doctor_review(doctor_id=doctor_id_param, territory=territory_filter)
-        if not data:
-            return
-        if doctor_id_param and "doctor_name" in data:
-            st.subheader(data.get("doctor_name", ""))
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Conv", f"{data.get('conv_rate', 0):.0%}")
-            m2.metric("Interest", f"{data.get('avg_interest', 0):.1f}/5")
-            m3.metric("Follow-up", f"{data.get('follow_up_rate', 0):.0%}")
-            m4.metric("LTV", f"${data.get('ltv', 0):,}")
-            st.caption(f"Score: {data.get('doctor_score',0):.2f} ({data.get('tier','').upper()})")
-        else:
-            doctors_list = data.get("doctors", [])
-            if doctors_list:
-                import pandas as pd
-                st.dataframe(pd.DataFrame(doctors_list), use_container_width=True)
+    with tab1:
+        territory_sel = st.selectbox("Filter by Territory", ["All"] + get_territories(), key="dr_territory")
+        territory_filter = None if territory_sel == "All" else territory_sel
+        overview = get_doctor_overview()
+        if overview:
+            st.subheader("Specialty Average Conversion")
+            st.dataframe(pd.DataFrame(overview.get("specialty_avg_conversion", [])))
+            st.subheader("Top 5 Doctors")
+            st.dataframe(pd.DataFrame(overview.get("top5_doctors", [])))
+            st.subheader("Territory Comparison")
+            st.dataframe(pd.DataFrame(overview.get("territory_comparison", [])))
+        if st.button("Refresh Doctor List", key="dr_refresh"):
+            st.rerun()
+
+    with tab2:
+        c1, c2 = st.columns(2)
+        with c1:
+            territory_sel2 = st.selectbox("Territory", ["All"] + get_territories(), key="dr_territory2")
+        with c2:
+            t = None if territory_sel2 == "All" else territory_sel2
+            doctors = get_doctors_by_territory(t) if t else []
+            doctor_opts = {f"{d['doctor_name']} ({d['doctor_id']})": d["doctor_id"] for d in doctors}
+            doctor_label = st.selectbox("Doctor", ["Select a doctor"] + list(doctor_opts.keys()), key="dr_doctor")
+        if doctor_label != "Select a doctor":
+            doctor_id = doctor_opts[doctor_label]
+            analysis = get_doctor_review(doctor_id=doctor_id)
+            if analysis:
+                st.subheader(analysis.get("doctor_name", ""))
+                mc1, mc2, mc3, mc4 = st.columns(4)
+                mc1.metric("Conv", f"{analysis.get('conv_rate',0):.1%}")
+                mc2.metric("Interest", f"{analysis.get('avg_interest',0):.1f}/5")
+                mc3.metric("Follow‑up", f"{analysis.get('follow_up_rate',0):.1%}")
+                mc4.metric("LTV", f"${analysis.get('ltv',0):,}")
+                st.caption(f"Score: {analysis.get('doctor_score',0):.2f} ({analysis.get('tier','').upper()})")
+                with st.expander("Product Affinity"):
+                    st.dataframe(pd.DataFrame(analysis.get("product_affinity", [])))
+                with st.expander("Objection Intelligence"):
+                    obj = analysis.get("objection_intelligence", {})
+                    if obj.get("has_objections"):
+                        st.write(obj.get("objection_breakdown", {}))
+                    else:
+                        st.write("No objections recorded.")
+                with st.expander("Next Best Action"):
+                    st.info(view_nba_hint(analysis))
+            else:
+                st.error("Doctor not found.")
+
+
+def view_nba_hint(analysis):
+    stage = analysis.get("aida_stage", "awareness")
+    hints = {
+        "awareness": "Introduce brand, leave brief.",
+        "interest": "Share clinical data, ask about patients.",
+        "desire": "Reinforce with case study, push for trial.",
+        "action": "Upsell complementary product.",
+    }
+    return hints.get(stage, "Engage appropriately.")
 
 
 def employee_reports_section():
     st.header("Employee Reports")
-    col_t, col_e = st.columns(2)
-    with col_t:
-        territories = get_territories()
-        territory_sel = st.selectbox("Territory (optional)", ["All"] + territories, key="er_territory")
-    with col_e:
-        territory_filter = None if territory_sel == "All" else territory_sel
-        employees = get_employees(territory=territory_filter)
-        emp_opts = {f"{e.get('employee_name','')} ({e.get('employee_id','')})": e.get("employee_id") for e in employees}
-        emp_sel_label = st.selectbox("Employee (optional)", ["Team Summary"] + list(emp_opts.keys()), key="er_emp")
-    emp_id_param = None if emp_sel_label == "Team Summary" else emp_opts.get(emp_sel_label)
+    tab1, tab2 = st.tabs(["Team Summary", "Individual Report"])
 
-    if st.button("Load Employee Report", type="primary"):
-        with st.spinner("Loading..."):
-            data = get_employee_report(employee_id=emp_id_param, territory=territory_filter)
-        if not data:
-            return
-        if emp_id_param and "employee_name" in data:
-            st.subheader(data.get("employee_name", ""))
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Visits", data.get("total_visits", 0))
-            m2.metric("Conv", f"{data.get('conv_rate', 0):.0%}")
-            m3.metric("Avg Duration", f"{data.get('avg_duration_sec', 0):.0f}s")
-            m4.metric("Score", f"{data.get('emp_score', 0):.2f}")
+    with tab1:
+        territory_sel = st.selectbox("Territory", ["All"] + get_territories(), key="er_territory")
+        t = None if territory_sel == "All" else territory_sel
+        team_data = get_employee_report(territory=t)
+        if team_data and "team" in team_data:
+            st.dataframe(pd.DataFrame(team_data["team"]), use_container_width=True)
         else:
-            team = data.get("team", [])
-            if team:
-                import pandas as pd
-                st.dataframe(pd.DataFrame(team), use_container_width=True)
+            st.info("No team data.")
+
+    with tab2:
+        territory_sel2 = st.selectbox("Territory", ["All"] + get_territories(), key="er_territory2")
+        t2 = None if territory_sel2 == "All" else territory_sel2
+        employees = get_employees(territory=t2)
+        emp_opts = {f"{e.get('employee_name','')} ({e.get('employee_id','')})": e.get("employee_id") for e in employees}
+        emp_label = st.selectbox("Employee", ["Select"] + list(emp_opts.keys()), key="er_emp")
+        if emp_label != "Select":
+            emp_id = emp_opts[emp_label]
+            report = get_employee_report(employee_id=emp_id)
+            if report and "error" not in report:
+                st.subheader(report.get("employee_name", ""))
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("Visits", report.get("total_visits", 0))
+                m2.metric("Conv", f"{report.get('conv_rate',0):.1%}")
+                m3.metric("Avg Duration", f"{report.get('avg_duration_sec',0):.0f}s")
+                m4.metric("Score", f"{report.get('emp_score',0):.2f}")
+                st.write(f"**Most Successful Product:** {report.get('most_successful_product', 'N/A')}")
+                st.write("**Improvement Areas:**")
+                for s in report.get("improvement_suggestions", []):
+                    st.markdown(f"- {s}")
+                with st.expander("Peer Comparison"):
+                    comp = report.get("comparison", {})
+                    st.write(f"Conv vs Avg: {comp.get('conv_vs_avg',0):.3f}")
+                    st.write(f"Outperforming: {'✅' if comp.get('outperforming') else '❌'}")
+            else:
+                st.error("Employee not found.")
 
 
 def main():
     st.sidebar.title("PatGPT")
-    menu = st.sidebar.radio(
-        "Main Menu",
-        ["Sales Assistant", "Product Performance", "Doctor Review", "Employee Reports"],
-        index=0,
-    )
+    menu = st.sidebar.radio("Menu", ["Sales Assistant", "Product Performance", "Doctor Review", "Employee Reports"])
     if menu == "Sales Assistant":
         sales_assistant_section()
     elif menu == "Product Performance":

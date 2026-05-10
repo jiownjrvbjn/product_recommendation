@@ -7,7 +7,6 @@ Enhanced LLM engine with:
 - Product underperformance explanation (plan §5)
 - LLM load minimised — only called via explicit user actions
 """
-
 from typing import Dict, Any, Optional, List
 from openai import AzureOpenAI
 import config.azure_sate as azure_state
@@ -22,9 +21,6 @@ class LLMInsightsEngineEnhanced:
         if not self.client:
             raise RuntimeError("Azure OpenAI client not initialized")
 
-    # ─────────────────────────────────────────────
-    # PUBLIC: doctor insights
-    # ─────────────────────────────────────────────
     def generate_doctor_insights(
         self,
         analytics_data: Dict[str, Any],
@@ -47,14 +43,8 @@ class LLMInsightsEngineEnhanced:
             "trend_narrative": trend_narrative,
         }
 
-    # ─────────────────────────────────────────────
-    # PUBLIC: meeting playbook
-    # ─────────────────────────────────────────────
     def generate_meeting_playbook(self, summary: Dict[str, Any]) -> str:
-        """
-        Called only when user clicks 'Generate AI Playbook'.
-        Builds a concise, persona-aware meeting playbook from doctor summary data.
-        """
+        """Builds a concise, persona-aware meeting playbook from doctor summary data."""
         doctor_info  = summary.get("doctor_info", {})
         aida         = summary.get("aida", {})
         persona      = summary.get("persona", {})
@@ -64,11 +54,11 @@ class LLMInsightsEngineEnhanced:
         engagement   = summary.get("engagement_metrics", {})
 
         notes           = last_meeting.get("meeting_notes") or "No notes recorded"
-        conv_rate       = engagement.get("conversion_rate", 0) * 100
+        conv_rate       = engagement.get("conversion_rate", 0)
         avg_duration_min = round((engagement.get("avg_meeting_duration_sec") or 0) / 60, 1)
 
         top_products_text = "\n".join([
-            f"- {p['product_name']}: presented {p['times_presented']} times, "
+            f"- {p.get('product_name', '')}: presented {p.get('times_presented', 0)} times, "
             f"avg {p.get('avg_time_per_presentation', 0)} sec"
             for p in top_products
         ]) or "No historical product data"
@@ -84,7 +74,7 @@ AIDA Stage: {aida.get('aida_label', 'Unknown')} — {aida.get('stage_guidance', 
 Persona: {persona.get('label', 'Unknown')} — {persona.get('approach', '')}
 
 Engagement:
-- Conversion Rate: {conv_rate:.0f}%
+- Conversion Rate: {conv_rate:.0%}
 - Avg Meeting Duration: {avg_duration_min} min
 
 Last Meeting (date {last_meeting.get('date', 'N/A')}):
@@ -95,7 +85,7 @@ Last Meeting (date {last_meeting.get('date', 'N/A')}):
 - Duration: {last_meeting.get('actual_time_seconds', 0)} sec
 - Notes: {notes}
 
-Top historically presented products (by time spent):
+Top historically presented products:
 {top_products_text}
 
 Common objections: {common_objections}
@@ -108,42 +98,41 @@ Your task: Write a short, actionable playbook for the MR/manager. Include:
 
 Format as bullet points. Keep it under 200 words.
 """
-        response = self.client.chat.completions.create(
-            model=self.deployment,
-            messages=[
-                {"role": "system", "content": "You are a concise pharmaceutical sales assistant."},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=1,
-            max_completion_tokens=800,
-        )
-        return response.choices[0].message.content or "Unable to generate playbook."
+        try:
+            response = self.client.chat.completions.create(
+                model=self.deployment,
+                messages=[
+                    {"role": "system", "content": "You are a concise pharmaceutical sales assistant."},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=1,
+                max_completion_tokens=800,
+            )
+            return response.choices[0].message.content or "Unable to generate playbook."
+        except Exception as e:
+            return f"Playbook generation failed: {str(e)}"
 
-    # ─────────────────────────────────────────────
-    # PUBLIC: product underperformance (plan §5)
-    # ─────────────────────────────────────────────
     def explain_product_underperformance(
         self,
         product_name: str,
         metrics: Dict[str, Any],
         objections: Dict[str, int],
     ) -> str:
-        """
-        Called only when user clicks 'Why underperforming?'.
-        Feeds product metrics + objection data into a focused prompt.
-        Metrics are pre-cleaned by server before calling this method.
-        """
+        """Called only when user clicks 'Why underperforming?'."""
         top_objections = ", ".join(
             f"{k} ({v}×)" for k, v in sorted(objections.items(), key=lambda x: -x[1])[:5]
         ) if objections else "None recorded"
 
         engagement_depth = metrics.get("engagement_depth", "N/A")
-        engagement_note = (
-            f"{engagement_depth} interactions per doctor on average — "
-            + ("high re-engagement but low conversion suggests messaging or fit issue."
-               if isinstance(engagement_depth, (int, float)) and engagement_depth > 5
-               else "low engagement depth — reps may not be revisiting this product.")
-        ) if engagement_depth != "N/A" else "Engagement depth data not available."
+        if isinstance(engagement_depth, (int, float)):
+            engagement_note = (
+                f"{engagement_depth} interactions per doctor — "
+                + ("high re-engagement but low conversion suggests messaging/fit issue."
+                   if engagement_depth > 5
+                   else "low engagement depth — reps may not be revisiting this product.")
+            )
+        else:
+            engagement_note = "Engagement depth data not available."
 
         prompt = f"""
 You are a pharmaceutical sales strategist. Analyse why this product is underperforming
@@ -162,157 +151,99 @@ Top Objections: {top_objections}
 Output format:
 
 ROOT CAUSE:
-<2-3 sentences on the main reason, referencing specific metrics above>
+<2-3 sentences>
 
 RECOMMENDATIONS:
-1. <specific, measurable action tied to the data>
-2. <specific, measurable action tied to the data>
-3. <specific, measurable action tied to the data>
+1. <action>
+2. <action>
+3. <action>
 
 QUICK WIN:
-<single immediate tactic the MR can use tomorrow>
+<single tactic>
 """
-        response = self.client.chat.completions.create(
-            model=self.deployment,
-            messages=[
-                {"role": "system", "content": "You are a pharmaceutical sales performance analyst. Be specific, data-driven, and concise."},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=1,
-            max_completion_tokens=1500,
-        )
-        return response.choices[0].message.content or "Unable to generate explanation."
+        try:
+            response = self.client.chat.completions.create(
+                model=self.deployment,
+                messages=[
+                    {"role": "system", "content": "You are a pharmaceutical sales performance analyst."},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=1,
+                max_completion_tokens=1500,
+            )
+            return response.choices[0].message.content or "Unable to generate explanation."
+        except Exception as e:
+            return f"Explanation failed: {str(e)}"
 
-    # ─────────────────────────────────────────────
-    # PRIVATE: recommendation block
-    # ─────────────────────────────────────────────
-    def _generate_recommendation_block(
-        self,
-        doctor_info: Dict,
-        engagement: Dict,
-        recommendations: Dict,
-        aida: Dict,
-        persona: Dict,
-    ) -> Dict[str, str]:
-        """Original recommendation block — enriched with AIDA and persona context."""
+    def _generate_recommendation_block(self, doctor_info, engagement, recommendations, aida, persona):
         top_products = self._format_top_products(recommendations.get("top_products", []))
         conversion_pct = (engagement.get("conversion_rate", 0) or 0) * 100
 
         prompt = f"""
-You are a pharma sales expert. Your task is to recommend actions, not summarize data.
+You are a pharma sales expert. Recommend actions, not summarize data.
 
-Doctor Profile:
-- Specialty: {doctor_info.get('specialty')}
-- Experience: {doctor_info.get('experience_years')} years
-- Publications: {doctor_info.get('publications_count')}
-- Social Media Reach: {doctor_info.get('social_media_reach')}
-- Patient Load: {doctor_info.get('patient_load')}
-
-Engagement:
-- Conversion Rate: {conversion_pct:.1f}%
-- Interest Level: {engagement.get('avg_interest_level', 0)}/5
-
-AIDA Stage: {aida.get('aida_label', 'Unknown')} (confidence {int((aida.get('aida_confidence', 0))*100)}%)
-Doctor Persona: {persona.get('label', 'Unknown')} — {persona.get('description', '')}
-
-Top Products:
-{top_products}
-
+Doctor: {doctor_info.get('specialty')}, {doctor_info.get('experience_years')} yrs exp
+Conversion: {conversion_pct:.1f}%
+Interest: {engagement.get('avg_interest_level', 0)}/5
+AIDA: {aida.get('aida_label', 'Unknown')} (confidence {int((aida.get('aida_confidence', 0))*100)}%)
+Persona: {persona.get('label', 'Unknown')} — {persona.get('description', '')}
+Top Products: {top_products}
 Doctor Score: {recommendations.get('doctor_score', 0)}
 
-Your task:
-1. Identify the single best product to push
-2. Explain why it fits this doctor's AIDA stage and persona
-3. Suggest two similar products
-4. Evaluate doctor value (High / Medium / Low)
-5. Give territory-aware, persona-tailored suggestion
-
-Output format:
-
-BEST PRODUCT:
-<product name + reason tied to AIDA stage and persona>
-
+Output:
+BEST PRODUCT: <name + reason>
 SIMILAR PRODUCTS:
-- product 1 (reason)
-- product 2 (reason)
-
-DOCTOR VALUE:
-<High / Medium / Low + reasoning>
-
-SUGGESTION:
-1-2 actionable, persona-aware recommendations on how to engage this doctor effectively
+- product1 (reason)
+- product2 (reason)
+DOCTOR VALUE: <High/Medium/Low + reasoning>
+SUGGESTION: <1-2 actionable, persona-aware tips>
 """
-        response = self.client.chat.completions.create(
-            model=self.deployment,
-            messages=[
-                {"role": "system", "content": "You are a pharmaceutical sales decision assistant."},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=1,
-            max_completion_tokens=5000,
-        )
-
-        content = response.choices[0].message.content
-        if not content:
+        try:
+            response = self.client.chat.completions.create(
+                model=self.deployment,
+                messages=[
+                    {"role": "system", "content": "You are a pharmaceutical sales decision assistant."},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=1,
+                max_completion_tokens=5000,
+            )
+            content = response.choices[0].message.content
+            if not content:
+                return {"best_product": "", "similar_products": "", "doctor_value": "", "suggestion": ""}
+            sections = {"best_product": "", "similar_products": "", "doctor_value": "", "suggestion": ""}
+            current = None
+            for line in content.split("\n"):
+                line = line.strip()
+                if line.upper().startswith("BEST PRODUCT"):
+                    current = "best_product"
+                elif line.upper().startswith("SIMILAR PRODUCTS"):
+                    current = "similar_products"
+                elif line.upper().startswith("DOCTOR VALUE"):
+                    current = "doctor_value"
+                elif line.upper().startswith("SUGGESTION"):
+                    current = "suggestion"
+                elif current:
+                    sections[current] += line + "\n"
+            return {k: v.strip() for k, v in sections.items()}
+        except:
             return {"best_product": "", "similar_products": "", "doctor_value": "", "suggestion": ""}
 
-        sections = {"best_product": "", "similar_products": "", "doctor_value": "", "suggestion": ""}
-        current = None
-        for line in content.split("\n"):
-            line = line.strip()
-            upper = line.upper()
-            if upper.startswith("BEST PRODUCT"):
-                current = "best_product"
-            elif upper.startswith("SIMILAR PRODUCTS"):
-                current = "similar_products"
-            elif upper.startswith("DOCTOR VALUE"):
-                current = "doctor_value"
-            elif upper.startswith("SUGGESTION"):
-                current = "suggestion"
-            elif current:
-                sections[current] += line + "\n"
-
-        return {k: v.strip() for k, v in sections.items()}
-
-    # ─────────────────────────────────────────────
-    # PRIVATE: trend narrative
-    # ─────────────────────────────────────────────
-    def _generate_trend_narrative(self, analytics_data: Dict[str, Any]) -> str:
-        """Generate a short human-readable trend narrative (rule-based, no LLM call)."""
+    def _generate_trend_narrative(self, analytics_data) -> str:
         trends = analytics_data.get("trend_analytics")
         if not trends:
-            return "Insufficient data for trend analysis."
-
-        trend_summary   = trends.get("trends", {})
-        conversion_trend = trend_summary.get("conversion", "stable")
-        interest_trend   = trend_summary.get("interest", "stable")
-        sales_trend      = trend_summary.get("sales", "stable")
-        total_months     = trends.get("summary", {}).get("total_months_tracked", 0)
-
+            return "Insufficient data."
+        trend_summary = trends.get("trends", {})
         parts = []
-
         icon_map = {"improving": "📈", "declining": "📉", "stable": "➡️"}
-        parts.append(f"{icon_map.get(conversion_trend, '➡️')} Conversion {conversion_trend}")
+        if trend_summary.get("conversion"):
+            parts.append(f"{icon_map.get(trend_summary['conversion'], '➡️')} Conversion {trend_summary['conversion']}")
+        return " | ".join(parts) or "Stable"
 
-        if interest_trend != "stable":
-            parts.append(f"interest {interest_trend}")
-
-        if sales_trend != "stable":
-            parts.append(f"sales {sales_trend}")
-
-        if total_months:
-            parts.append(f"over {total_months} months")
-
-        return " | ".join(parts) if parts else "Trend data unavailable."
-
-    # ─────────────────────────────────────────────
-    # HELPERS
-    # ─────────────────────────────────────────────
     def _format_top_products(self, products: list) -> str:
         if not products:
-            return "No products available"
+            return "No products"
         return "\n".join([
-            f"- {p['product_name']} (conversion: {p.get('conversion_rate', 0):.1%}, "
-            f"interest: {p.get('avg_interest', 0):.1f}/5)"
+            f"- {p.get('product_name', '')} (conv: {p.get('conversion_rate', 0):.1%}, interest: {p.get('avg_interest', 0):.1f}/5)"
             for p in products
         ])
