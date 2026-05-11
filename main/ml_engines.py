@@ -27,6 +27,8 @@ from main.analytics_engine import (
     ObjectionResolutionTracker,
 )
 
+_aida_classifier = AIDAClassifier()
+
 
 class ProductRecommendationEngine:
 
@@ -202,10 +204,10 @@ class ProductPerformanceEngine:
         if "region" in self.df.columns:
             self.df["region"] = self.df["region"].astype(str).str.strip()
 
-    def _filter(self, region=None, quarter=None):
+    def _filter(self, territory=None, quarter=None):       
         df = self.df.copy()
-        if region:
-            df = df[df["region"].str.lower() == region.strip().lower()]
+        if territory:
+            df = df[df["territory"].str.lower() == territory.strip().lower()]   
         if quarter:
             df = df[df["quarter"].str.upper() == quarter.strip().upper()]
         return df
@@ -237,8 +239,8 @@ class ProductPerformanceEngine:
         slope = np.polyfit(x[mask], y[mask], 1)[0]
         return "improving" if slope > 5 else ("declining" if slope < -5 else "stable")
 
-    def get_overall_summary(self, region=None, quarter=None):
-        df = self._filter(region, quarter)
+    def get_overall_summary(self, territory=None, quarter=None):
+        df = self._filter(territory, quarter)
         if df.empty:
             return pd.DataFrame()
         rows = []
@@ -252,10 +254,17 @@ class ProductPerformanceEngine:
             follow_up_rate = round((p_df["follow_up"] == "yes").sum() / max(len(p_df), 1), 3)
             qoq_growth = self._qoq_growth(product)
             p_all = self.df[self.df["product_name"] == product].copy()
+            # Drop NaT dates before period groupby to avoid conversion errors
+            p_all = p_all[p_all["interaction_date"].notna()].copy()
             p_all["month"] = p_all["interaction_date"].dt.to_period("M")
             monthly_sales = p_all.groupby("month")["sales_volume"].sum().tolist()
             trend = self._sales_trend(monthly_sales)
-            top_region = p_df.groupby("region")["sales_volume"].sum().idxmax() if "region" in p_df.columns else "N/A"
+            # Guard idxmax() — it raises ValueError when all values are 0 or the Series is empty
+            if "region" in p_df.columns and not p_df["region"].isna().all():
+                region_sales = p_df.groupby("region")["sales_volume"].sum()
+                top_region = str(region_sales.idxmax()) if region_sales.sum() > 0 else "N/A"
+            else:
+                top_region = "N/A"
             rows.append({
                 "product": product, "total_sales": total_sales, "qoq_growth": qoq_growth,
                 "conv_rate": conv_rate, "avg_interest": avg_interest,
@@ -264,21 +273,34 @@ class ProductPerformanceEngine:
             })
         return pd.DataFrame(rows).sort_values("total_sales", ascending=False).reset_index(drop=True)
 
-    def get_product_detail(self, product_name):
+    def get_product_detail(self, product_name, territory=None, quarter=None):
         p_df = self.df[self.df["product_name"] == product_name].copy()
         if p_df.empty:
             return {"error": f"Product '{product_name}' not found."}
+        if territory and "territory" in p_df.columns:
+            p_df = p_df[p_df["territory"].str.lower() == territory.strip().lower()]
+            if p_df.empty:
+                return {"error": f"Product '{product_name}' not found in territory '{territory}'."}
+        if quarter and "quarter" in p_df.columns:
+            p_df = p_df[p_df["quarter"].str.upper() == quarter.strip().upper()]
+            if p_df.empty:
+                return {"error": f"Product '{product_name}' not found in quarter '{quarter}'."}
+        # Drop rows with unparseable dates before grouping to avoid NaT period errors
+        p_df = p_df[p_df["interaction_date"].notna()].copy()
         p_df["month"] = p_df["interaction_date"].dt.to_period("M")
+
         monthly_sales = p_df.groupby("month")["sales_volume"].sum().reset_index()
         monthly_sales.columns = ["month", "sales_volume"]
         monthly_sales["month"] = monthly_sales["month"].astype(str)
 
-        monthly_conv = (
-            p_df.groupby("month")
-            .apply(lambda x: round((x["outcome"] == "positive").sum() / max(len(x), 1), 3))
+        # Use .agg() instead of .apply(scalar_lambda) — pandas 2.x safe, no include_groups warning
+        _conv_grp = (
+            p_df.groupby("month")["outcome"]
+            .agg(lambda x: round((x == "positive").sum() / max(len(x), 1), 3))
             .reset_index()
         )
-        monthly_conv.columns = ["month", "conversion_rate"]
+        _conv_grp.columns = ["month", "conversion_rate"]
+        monthly_conv = _conv_grp.copy()
         monthly_conv["month"] = monthly_conv["month"].astype(str)
 
         obj_col = "objection" if "objection" in p_df.columns else ("objection_type" if "objection_type" in p_df.columns else None)
@@ -301,6 +323,8 @@ class ProductPerformanceEngine:
         )
         top_doctors = doctor_perf.to_dict(orient="records")
         for doc in top_doctors:
+            doc["doctor_id"] = str(doc["doctor_id"])
+            doc["doctor_name"] = str(doc.get("doctor_name", ""))
             doc["total_sales"] = int(doc["total_sales"])
             doc["conv_rate"] = round(doc["conv_rate"], 3)
 
@@ -469,14 +493,18 @@ class DoctorReviewEngine:
             (self.df[self.df["doctor_id"] == did]["outcome"] == "positive").sum() / max(len(self.df[self.df["doctor_id"] == did]), 1)
             for did in terr_df["doctor_id"].unique()
         ]
-        rank_in_territory = sorted(terr_convs, reverse=True).index(conv_rate) + 1 if conv_rate in terr_convs else 0
+        rank_in_territory = next(
+            (i + 1 for i, v in enumerate(sorted(terr_convs, reverse=True)) if abs(v - conv_rate) < 1e-6), 0
+        )
 
         spec_df = self.df[self.df["specialty"] == specialty]
         spec_convs = [
             (self.df[self.df["doctor_id"] == did]["outcome"] == "positive").sum() / max(len(self.df[self.df["doctor_id"] == did]), 1)
             for did in spec_df["doctor_id"].unique()
         ]
-        rank_in_specialty = sorted(spec_convs, reverse=True).index(conv_rate) + 1 if conv_rate in spec_convs else 0
+        rank_in_specialty = next(
+            (i + 1 for i, v in enumerate(sorted(spec_convs, reverse=True)) if abs(v - conv_rate) < 1e-6), 0
+        )
 
         product_affinity = []
         for product in d["product_name"].unique():
@@ -490,6 +518,8 @@ class DoctorReviewEngine:
                 "total_sales": int(p_df["sales_volume"].sum()) if "sales_volume" in p_df.columns else 0,
             })
         product_affinity.sort(key=lambda x: x["conv_rate"], reverse=True)
+
+        aida_result = _aida_classifier.classify(d)
 
         return {
             "doctor_id": doctor_id,
@@ -511,6 +541,11 @@ class DoctorReviewEngine:
             "product_affinity": product_affinity,
             "trend_analytics": self._trend_engine.get_doctor_trends(doctor_id),
             "objection_intelligence": self._objection_tracker.get_objection_analysis(doctor_id),
+            "aida_stage": aida_result["aida_stage"],
+            "aida_label": aida_result["aida_label"],
+            "aida_color": aida_result["aida_color"],
+            "aida_emoji": aida_result["aida_emoji"],
+            "aida_confidence": aida_result["aida_confidence"],
         }
 
     def get_doctor_overview_stats(self):
@@ -545,7 +580,10 @@ class EmployeeReportEngine:
             "neutral": "neutral", "pending": "neutral",
         }
         self.df["outcome"] = self.df["outcome"].map(outcome_map).fillna("neutral")
-        self.df["employee_id"] = self.df["employee_id"].astype(str).str.strip()
+        if "employee_id" in self.df.columns:
+            self.df["employee_id"] = self.df["employee_id"].astype(str).str.strip()
+        else:
+            self.df["employee_id"] = "unknown"
         self.df["territory"] = self.df["territory"].astype(str).str.strip().str.lower()
         for col in ["actual_time_seconds", "sales_volume", "interest_level"]:
             if col in self.df.columns:
@@ -614,17 +652,20 @@ class EmployeeReportEngine:
         max_prods = self.df["product_name"].nunique()
 
         score = self._emp_score(conv_rate, avg_duration, products, terr_conv, terr_dur, max_prods)
-        best_product = e.groupby("product_name")["sales_volume"].sum().idxmax() if "sales_volume" in e.columns else "N/A"
+        if "sales_volume" in e.columns and e["sales_volume"].sum() > 0:
+            best_product = str(e.groupby("product_name")["sales_volume"].sum().idxmax())
+        else:
+            best_product = "N/A"
 
         doctor_rows = []
         for did in e["doctor_id"].unique():
             d_df = e[e["doctor_id"] == did]
             d_conv = round((d_df["outcome"] == "positive").sum() / max(len(d_df), 1), 3)
             doctor_rows.append({
-                "doctor_id": did,
-                "doctor_name": d_df["doctor_name"].iloc[0],
-                "visits": len(d_df),
-                "conv_rate": d_conv,
+                "doctor_id": str(did),                                      # cast numpy.str_ → str
+                "doctor_name": str(d_df["doctor_name"].iloc[0]),
+                "visits": int(len(d_df)),
+                "conv_rate": float(d_conv),
                 "total_sales": int(d_df["sales_volume"].sum()) if "sales_volume" in d_df.columns else 0,
             })
         doctor_rows.sort(key=lambda x: x["conv_rate"], reverse=True)
@@ -638,22 +679,22 @@ class EmployeeReportEngine:
             suggestions.append("Only pitching few products. Expand portfolio coverage.")
 
         return {
-            "employee_id": employee_id,
-            "employee_name": static.get("employee_name", ""),
-            "employee_type": emp_type,
-            "territory": territory,
-            "total_visits": visits,
-            "conv_rate": conv_rate,
-            "avg_duration_sec": avg_duration,
-            "total_sales": total_sales,
-            "products_pitched": products,
-            "emp_score": score,
+            "employee_id": str(employee_id),
+            "employee_name": str(static.get("employee_name", "")),
+            "employee_type": str(emp_type),
+            "territory": str(territory),
+            "total_visits": int(visits),
+            "conv_rate": float(conv_rate),
+            "avg_duration_sec": float(avg_duration),
+            "total_sales": int(total_sales),
+            "products_pitched": int(products),
+            "emp_score": float(score),
             "most_successful_product": best_product,
-            "territory_avg": {"conv_rate": terr_conv, "avg_duration_sec": terr_dur},
+            "territory_avg": {"conv_rate": float(terr_conv), "avg_duration_sec": float(terr_dur)},
             "comparison": {
-                "conv_vs_avg": round(conv_rate - terr_conv, 3),
-                "duration_vs_avg": round(avg_duration - terr_dur, 1),
-                "outperforming": conv_rate >= terr_conv,
+                "conv_vs_avg": float(round(conv_rate - terr_conv, 3)),
+                "duration_vs_avg": float(round(avg_duration - terr_dur, 1)),
+                "outperforming": bool(conv_rate >= terr_conv),
             },
             "doctors_handled": doctor_rows,
             "improvement_suggestions": suggestions,

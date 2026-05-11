@@ -72,11 +72,11 @@ def get_meeting_playbook(doctor_id, time_sec, employee_type):
     except:
         return "❌ Error generating playbook."
 
-def get_product_performance(product=None, region=None, quarter=None):
+def get_product_performance(product=None, territory=None, quarter=None):
     try:
         params = {}
         if product: params["product"] = product
-        if region: params["region"] = region
+        if territory: params["territory"] = territory
         if quarter: params["quarter"] = quarter
         r = requests.get(f"{BASE_URL}/analytics/product_performance", params=params, timeout=30)
         r.raise_for_status()
@@ -539,17 +539,17 @@ def product_performance_section():
     with col_p:
         product_sel = st.selectbox("Product", ["Overall Summary"] + products)
     with col_r:
-        region_sel = st.selectbox("Region", ["All"] + territories)
+        territory_sel = st.selectbox("Territory", ["All"] + territories)
     with col_q:
         quarter_sel = st.selectbox("Quarter", ["All", "Q1", "Q2", "Q3", "Q4"])
 
     product_param = None if product_sel == "Overall Summary" else product_sel
-    region_param = None if region_sel == "All" else region_sel
+    territory_param = None if territory_sel == "All" else territory_sel
     quarter_param = None if quarter_sel == "All" else quarter_sel
 
     if st.button("Load Product Data", type="primary"):
         with st.spinner("Loading..."):
-            data = get_product_performance(product=product_param, region=region_param, quarter=quarter_param)
+            data = get_product_performance(product=product_param, territory=territory_param, quarter=quarter_param)
             if not data:
                 st.error("No data available.")
                 return
@@ -642,8 +642,10 @@ def doctor_review_section():
                 mc1.metric("Conv", f"{analysis.get('conv_rate',0):.1%}")
                 mc2.metric("Interest", f"{analysis.get('avg_interest',0):.1f}/5")
                 mc3.metric("Follow‑up", f"{analysis.get('follow_up_rate',0):.1%}")
-                mc4.metric("LTV", f"${analysis.get('ltv',0):,}")
-                st.caption(f"Score: {analysis.get('doctor_score',0):.2f} ({analysis.get('tier','').upper()})")
+                mc4.metric("LTV", f"₹{analysis.get('ltv',0):,}")
+                st.caption(f"Score: {analysis.get('doctor_score',0):.2f} ({analysis.get('tier','').upper()}) | "
+                           f"Territory Rank: #{analysis.get('rank_in_territory', '—')} | "
+                           f"Specialty Rank: #{analysis.get('rank_in_specialty', '—')}")
                 with st.expander("Product Affinity"):
                     st.dataframe(pd.DataFrame(analysis.get("product_affinity", [])))
                 with st.expander("Objection Intelligence"):
@@ -660,13 +662,17 @@ def doctor_review_section():
 
 def view_nba_hint(analysis):
     stage = analysis.get("aida_stage", "awareness")
+    emoji = analysis.get("aida_emoji", "👁️")
+    label = analysis.get("aida_label", "Awareness")
+    confidence = int((analysis.get("aida_confidence", 0)) * 100)
     hints = {
         "awareness": "Introduce brand, leave brief.",
         "interest": "Share clinical data, ask about patients.",
         "desire": "Reinforce with case study, push for trial.",
         "action": "Upsell complementary product.",
     }
-    return hints.get(stage, "Engage appropriately.")
+    hint = hints.get(stage, "Engage appropriately.")
+    return f"{emoji} **{label}** (confidence {confidence}%) — {hint}"
 
 
 def employee_reports_section():

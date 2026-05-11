@@ -108,9 +108,60 @@ Format as bullet points. Keep it under 200 words.
                 temperature=1,
                 max_completion_tokens=800,
             )
-            return response.choices[0].message.content or "Unable to generate playbook."
-        except Exception as e:
-            return f"Playbook generation failed: {str(e)}"
+            result = response.choices[0].message.content
+            if result and result.strip():
+                return result.strip()
+        except Exception:
+            pass   # fall through to fallback
+
+        # ── Rule‑based fallback ─────────────────────────────────────────
+        stage = aida.get("aida_stage", "awareness")
+        persona_type = persona.get("persona", "analytical")
+        doc_name = doctor_info.get("doctor_name", "the doctor")
+
+        opening_lines = {
+            "awareness": "Good morning, Dr. {name}. I’d like to briefly share a new approach that addresses {specialty} challenges.",
+            "interest":  "Dr. {name}, I noticed you’ve shown interest in {top_product} – let me share some clinical data that may be useful.",
+            "desire":    "Great to see your growing interest, Dr. {name}. I have a patient success story that reinforces why {top_product} fits your practice.",
+            "action":    "Thank you for your continued trust, Dr. {name}. Today I’d like to discuss how we can expand your results with complementary options.",
+        }
+
+        talking_points = {
+            "analytical":    ["Highlight recent peer‑reviewed study results.", "Compare efficacy data vs. alternatives."],
+            "emotional":     ["Share a patient story that demonstrates improved adherence.", "Ask about a memorable patient case."],
+            "fast_decision": ["Present top‑line value in 30 seconds.", "Offer a limited‑time trial or sample."],
+            "resistant":     ["Address the most common objection without being pushy.", "Ask what would need to change for them to reconsider."],
+        }
+
+        closing_questions = {
+            "awareness": "Would you be open to reviewing a one‑pager before our next visit?",
+            "interest":  "Shall I leave a trial sample for you to evaluate with a few patients?",
+            "desire":    "Can we schedule a follow‑up to discuss starting a pilot prescription?",
+            "action":    "Which of these two complementary products would you like to introduce next?",
+        }
+
+        specialty = doctor_info.get("specialty", "your specialty")
+        top_product = ", ".join([p.get("product_name", "") for p in top_products[:2]]) or "our key product"
+
+        opening = opening_lines.get(stage, opening_lines["awareness"]).format(name=doc_name, specialty=specialty, top_product=top_product)
+        points = talking_points.get(persona_type, talking_points["analytical"])
+        closing = closing_questions.get(stage, closing_questions["awareness"])
+
+        playbook = f"""
+        **Opening Line**
+        {opening}
+
+        **Key Talking Points**
+        1. {points[0]}
+        2. {points[1]}
+
+        **Suggested Product Focus**  
+        {top_product} (based on historical engagement)
+
+        **Closing Question**
+        {closing}
+        """
+        return playbook.strip()
 
     def explain_product_underperformance(
         self,

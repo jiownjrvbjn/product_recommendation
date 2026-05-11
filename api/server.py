@@ -215,14 +215,15 @@ def customize_suggestion(doctor_id: str, time_sec: int = Query(60), employee_typ
 @app.get("/analytics/product_performance")
 def product_performance(product: Optional[str] = Query(None), region: Optional[str] = Query(None),
                         quarter: Optional[str] = Query(None)):
+    territory = region
     if product:
-        detail = product_perf_engine.get_product_detail(product)
+        detail = product_perf_engine.get_product_detail(product, territory=territory, quarter=quarter)
         if "error" in detail:
             raise HTTPException(status_code=404, detail=detail["error"])
         quarterly = product_perf_engine.get_quarterly_table(product_name=product)
         detail["quarterly_table"] = quarterly.to_dict(orient="records") if not quarterly.empty else []
         return JSONResponse(content=detail)
-    summary_df = product_perf_engine.get_overall_summary(region=region, quarter=quarter)
+    summary_df = product_perf_engine.get_overall_summary(territory=territory, quarter=quarter)
     quarterly_df = product_perf_engine.get_quarterly_table()
     return JSONResponse(content={
         "summary": summary_df.to_dict(orient="records") if not summary_df.empty else [],
