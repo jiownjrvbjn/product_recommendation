@@ -213,22 +213,149 @@ def customize_suggestion(doctor_id: str, time_sec: int = Query(60), employee_typ
 
 
 @app.get("/analytics/product_performance")
-def product_performance(product: Optional[str] = Query(None), region: Optional[str] = Query(None),
-                        quarter: Optional[str] = Query(None)):
-    territory = region
+def product_performance(
+    product: Optional[str] = Query(None),
+    territory: Optional[str] = Query(None),
+    quarter: Optional[str] = Query(None),
+):
+    def clean_json(obj):
+        import numpy as np
+        import pandas as pd
+
+        if isinstance(obj, dict):
+            return {
+                str(k): clean_json(v)
+                for k, v in obj.items()
+            }
+        if isinstance(obj, list):
+            return [clean_json(v) for v in obj]
+        if isinstance(obj, tuple):
+            return [clean_json(v) for v in obj]
+        if isinstance(obj, np.bool_):
+            return bool(obj)
+        if isinstance(obj, (np.integer,)):
+            return int(obj)
+        if isinstance(obj, (np.floating,)):
+            return float(obj)
+        if pd.isna(obj):
+            return None
+        return obj
+
     if product:
-        detail = product_perf_engine.get_product_detail(product, territory=territory, quarter=quarter)
-        if "error" in detail:
-            raise HTTPException(status_code=404, detail=detail["error"])
-        quarterly = product_perf_engine.get_quarterly_table(product_name=product)
-        detail["quarterly_table"] = quarterly.to_dict(orient="records") if not quarterly.empty else []
-        return JSONResponse(content=detail)
-    summary_df = product_perf_engine.get_overall_summary(territory=territory, quarter=quarter)
+        detail = product_perf_engine.get_product_detail(
+            product_name=product,
+            territory=territory,
+            quarter=quarter,
+        )
+        if not detail or "error" in detail:
+            raise HTTPException(
+                status_code=404,
+                detail=detail.get("error", "Product not found")
+            )
+        quarterly = product_perf_engine.get_quarterly_table(
+            product_name=product
+        )
+        detail["quarterly_table"] = (
+            quarterly.to_dict(orient="records")
+            if not quarterly.empty else []
+        )
+        return JSONResponse(content=clean_json(detail))
+    summary_df = product_perf_engine.get_overall_summary(
+        territory=territory,
+        quarter=quarter,
+    )
     quarterly_df = product_perf_engine.get_quarterly_table()
-    return JSONResponse(content={
-        "summary": summary_df.to_dict(orient="records") if not summary_df.empty else [],
-        "quarterly_table": quarterly_df.to_dict(orient="records") if not quarterly_df.empty else [],
-    })
+    response = {
+        "summary": (
+            summary_df.to_dict(orient="records")
+            if not summary_df.empty else []
+        ),
+        "quarterly_table": (
+            quarterly_df.to_dict(orient="records")
+            if not quarterly_df.empty else []
+        ),
+    }
+    return JSONResponse(content=clean_json(response))
+
+@app.get("/analytics/product_performance/detail/{product_name}")
+def product_performance_detail(
+    product_name: str,
+    territory: Optional[str] = Query(None),
+    quarter: Optional[str] = Query(None),
+):
+    detail = product_perf_engine.get_product_detail(
+        product_name=product_name,
+        territory=territory,
+        quarter=quarter,
+    )
+    if not detail or "error" in detail:
+        raise HTTPException(
+            status_code=404,
+            detail=detail.get("error", "Product not found")
+        )
+    quarterly = product_perf_engine.get_quarterly_table(
+        product_name=product_name
+    )
+    detail["quarterly_table"] = (
+        quarterly.to_dict(orient="records")
+        if not quarterly.empty else []
+    )
+    def clean_json(obj):
+        import numpy as np
+        import pandas as pd
+
+        if isinstance(obj, dict):
+            return {
+                str(k): clean_json(v)
+                for k, v in obj.items()
+            }
+
+        if isinstance(obj, list):
+            return [clean_json(v) for v in obj]
+        if isinstance(obj, tuple):
+            return [clean_json(v) for v in obj]
+        if isinstance(obj, np.bool_):
+            return bool(obj)
+        if isinstance(obj, (np.integer,)):
+            return int(obj)
+        if isinstance(obj, (np.floating,)):
+            return float(obj)
+        if pd.isna(obj):
+            return None
+        return obj
+    return JSONResponse(content=clean_json(detail))
+
+
+@app.get("/llm/product_ai_analysis/{product_name}")
+def product_ai_analysis(
+    product_name: str,
+    territory: Optional[str] = Query(None),
+    quarter: Optional[str] = Query(None),
+):
+    if llm_engine is None:
+        raise HTTPException(
+            status_code=503,
+            detail="LLM engine not available"
+        )
+    detail = product_perf_engine.get_product_detail(
+        product_name=product_name,
+        territory=territory,
+        quarter=quarter,
+    )
+    if not detail or "error" in detail:
+        raise HTTPException(
+            status_code=404,
+            detail=detail.get("error", "Product not found")
+        )
+    analysis = llm_engine.explain_product_underperformance(
+        product_name=product_name,
+        metrics=detail,
+        objections=detail.get("objection_breakdown", {})
+    )
+    return {
+        "product_name": product_name,
+        "analysis": analysis
+    }
 
 
 @app.get("/analytics/region_product_matrix")
@@ -345,22 +472,6 @@ def get_product_aida(doctor_id: str, time_sec: int = Query(60), employee_type: s
         "product_aida": product_aida_list,
     })
 
-@app.get("/analytics/product_performance/detail/{product_name}")
-def product_performance_detail(
-    product_name: str,
-    territory:    Optional[str] = Query(None),
-    quarter:      Optional[str] = Query(None),
-):
-    detail = product_perf_engine.get_product_detail(
-        product_name, territory=territory, quarter=quarter
-    )
-    if "error" in detail:
-        raise HTTPException(status_code=404, detail=detail["error"])
-    detail["regional_breakdown"] = product_perf_engine.get_region_breakdown(
-        product_name=product_name, quarter=quarter
-    )
-    return JSONResponse(content=detail)
-
 @app.get("/analytics/product_performance/summary")
 def product_performance_summary(
     territory: Optional[str] = Query(None),
@@ -388,16 +499,6 @@ def trend_analysis(
 ):
     data = product_perf_engine.get_trend_analysis(territory=territory, quarter=quarter)
     return JSONResponse(content=data)
-
-@app.get("/llm/product_ai_analysis/{product_name}")
-def product_ai_analysis(product_name: str):
-    analysis = product_perf_engine.generate_ai_analysis(
-        product_name=product_name,
-        llm_engine=llm_engine,   # None-safe: engine checks internally
-    )
-    if "error" in analysis:
-        raise HTTPException(status_code=404, detail=analysis["error"])
-    return JSONResponse(content=analysis)
 
 if __name__ == "__main__":
     import uvicorn

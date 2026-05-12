@@ -184,10 +184,16 @@ def get_trend_analysis(territory=None, quarter=None):
         return {}
 
 
-def get_product_ai_analysis(product_name):
+def get_product_ai_analysis(product_name, territory=None, quarter=None):
     try:
+        params = {}
+        if territory:
+            params["territory"] = territory
+        if quarter:
+            params["quarter"] = quarter
         r = requests.get(
             f"{BASE_URL}/llm/product_ai_analysis/{requests.utils.quote(product_name)}",
+            params=params,
             timeout=60
         )
         r.raise_for_status()
@@ -198,10 +204,17 @@ def get_product_ai_analysis(product_name):
 def get_product_performance(product=None, territory=None, quarter=None):
     try:
         params = {}
-        if product:    params["product"]    = product
-        if territory:  params["territory"]  = territory
-        if quarter:    params["quarter"]    = quarter
-        r = requests.get(f"{BASE_URL}/analytics/product_performance", params=params, timeout=30)
+        if product:
+            params["product"] = product
+        if territory:
+            params["territory"] = territory
+        if quarter:
+            params["quarter"] = quarter
+        r = requests.get(
+            f"{BASE_URL}/analytics/product_performance",
+            params=params,
+            timeout=30
+        )
         r.raise_for_status()
         return r.json()
     except Exception:
@@ -317,6 +330,7 @@ def _render_overall_summary(territory_param, quarter_param):
     def _highlight_underperf(row):
         color = (
             "background-color: #fef2f2;"
+            "color: #000000;"
             if row.get("underperformance_flag")
             else ""
         )
@@ -371,6 +385,7 @@ def _render_overall_summary(territory_param, quarter_param):
                 st.markdown(
                     f"""
                     <div style="background:#fef2f2;
+                    color:#000000;
                     border-left:4px solid #ef4444;
                     padding:8px 12px;
                     border-radius:6px;
@@ -519,7 +534,7 @@ def _render_product_detail(product_name, territory_param, quarter_param):
         col_top, col_low = st.columns(2)
 
         with col_top:
-            st.markdown("**🏆 Top Performing Doctors**")
+            st.markdown("**🏆 Top Prescribing Doctors**")
 
             top_docs = data.get("top_doctors", [])
 
@@ -533,7 +548,7 @@ def _render_product_detail(product_name, territory_param, quarter_param):
                 st.info("No doctor performance data.")
 
         with col_low:
-            st.markdown("**📉 Lowest Performing Doctors**")
+            st.markdown("**📉 Lowest Prescribing Doctors**")
 
             low_docs = data.get("lowest_doctors", [])
 
@@ -601,6 +616,7 @@ def _render_product_detail(product_name, territory_param, quarter_param):
                     st.markdown(
                         f"""
                         <div style="background:#f1f5f9;
+                        color:#000000;
                         border-left:4px solid #6366f1;
                         padding:8px 14px;
                         border-radius:6px;
@@ -762,6 +778,7 @@ def _render_ai_analysis_card(
         st.markdown(
             f"""
             <div style="background:#eff6ff;
+            color:#000000;
             border-left:4px solid #3b82f6;
             padding:10px 14px;
             border-radius:6px;
