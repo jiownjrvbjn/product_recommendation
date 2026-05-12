@@ -134,6 +134,89 @@ def get_employee_report(employee_id=None, territory=None):
     except:
         return None
 
+def get_product_performance_summary(territory=None, quarter=None):
+    try:
+        params = {}
+        if territory: params["territory"] = territory
+        if quarter:   params["quarter"]   = quarter
+        r = requests.get(f"{BASE_URL}/analytics/product_performance/summary", params=params, timeout=30)
+        r.raise_for_status()
+        return r.json()
+    except Exception:
+        return None
+
+def get_product_detail(product_name, territory=None, quarter=None):
+    try:
+        params = {}
+        if territory: params["territory"] = territory
+        if quarter:   params["quarter"]   = quarter
+        r = requests.get(
+            f"{BASE_URL}/analytics/product_performance/detail/{requests.utils.quote(product_name)}",
+            params=params, timeout=30
+        )
+        r.raise_for_status()
+        return r.json()
+    except Exception:
+        return None
+
+
+def get_region_breakdown(product=None, quarter=None):
+    try:
+        params = {}
+        if product: params["product"] = product
+        if quarter: params["quarter"] = quarter
+        r = requests.get(f"{BASE_URL}/analytics/region_breakdown", params=params, timeout=30)
+        r.raise_for_status()
+        return r.json().get("regional_breakdown", [])
+    except Exception:
+        return []
+
+
+def get_trend_analysis(territory=None, quarter=None):
+    try:
+        params = {}
+        if territory: params["territory"] = territory
+        if quarter:   params["quarter"]   = quarter
+        r = requests.get(f"{BASE_URL}/analytics/trend_analysis", params=params, timeout=30)
+        r.raise_for_status()
+        return r.json()
+    except Exception:
+        return {}
+
+
+def get_product_ai_analysis(product_name):
+    try:
+        r = requests.get(
+            f"{BASE_URL}/llm/product_ai_analysis/{requests.utils.quote(product_name)}",
+            timeout=60
+        )
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        return {"error": str(e)}
+
+def get_product_performance(product=None, territory=None, quarter=None):
+    try:
+        params = {}
+        if product:    params["product"]    = product
+        if territory:  params["territory"]  = territory
+        if quarter:    params["quarter"]    = quarter
+        r = requests.get(f"{BASE_URL}/analytics/product_performance", params=params, timeout=30)
+        r.raise_for_status()
+        return r.json()
+    except Exception:
+        return None
+
+
+def get_region_matrix(quarter=None):
+    try:
+        params = {"quarter": quarter} if quarter else {}
+        r = requests.get(f"{BASE_URL}/analytics/region_product_matrix", params=params, timeout=30)
+        r.raise_for_status()
+        return r.json()
+    except Exception:
+        return None
+
 def get_llm_product_insight(product_name):
     try:
         r = requests.get(f"{BASE_URL}/llm/product_insight/{product_name}", timeout=30)
@@ -141,6 +224,657 @@ def get_llm_product_insight(product_name):
         return r.json().get("explanation", "No explanation available.")
     except Exception as e:
         return f"❌ Error: {str(e)}"
+    
+def _trend_badge(trend: str) -> str:
+    return {"improving": "🟢 Improving", "declining": "🔴 Declining"}.get(trend, "🟡 Stable")
+
+
+def _delta_color(val: float) -> str:
+    return "normal" if val >= 0 else "inverse"
+
+
+def _pct(v): return f"{v:.1%}"
+def _int(v): return f"{int(v):,}"
+
+
+def _kpi_row(data: dict):
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    c1.metric("Total Sales",        _int(data.get("total_sales", 0)))
+    c2.metric("Interactions",       _int(data.get("total_interactions", 0)))
+    c3.metric("Unique Doctors",     _int(data.get("unique_doctors", 0)))
+    c4.metric("Conversion Rate",    _pct(data.get("conversion_rate", 0)))
+    c5.metric("Avg Interest",       f"{data.get('avg_interest', 0):.1f}/5")
+    c6.metric("QoQ Growth",
+              _pct(data.get("qoq_growth", 0)),
+              delta=_pct(data.get("qoq_growth", 0)),
+              delta_color=_delta_color(data.get("qoq_growth", 0)))
+
+def _render_overall_summary(territory_param, quarter_param):
+    st.markdown("### 📊 Portfolio Overview")
+
+    with st.spinner("Loading portfolio data…"):
+        summary_data = get_product_performance_summary(
+            territory=territory_param,
+            quarter=quarter_param
+        )
+
+        trend_data = get_trend_analysis(
+            territory=territory_param,
+            quarter=quarter_param
+        )
+
+        region_data = get_region_breakdown(
+            quarter=quarter_param
+        )
+
+    if not summary_data or not summary_data.get("summary"):
+        st.info("No data found for the selected filters.")
+        return
+
+    df_summary = pd.DataFrame(summary_data["summary"])
+
+    if trend_data:
+        port_trend = trend_data.get("portfolio_trend", "stable")
+        growing = trend_data.get("top_growing_products", [])
+        declining = trend_data.get("top_declining_products", [])
+
+        with st.container(border=True):
+            st.markdown(
+                f"**Portfolio Trend: {_trend_badge(port_trend)}**"
+            )
+
+            tc1, tc2 = st.columns(2)
+
+            with tc1:
+                st.markdown("**📈 Top Growing Products**")
+
+                for p in growing:
+                    st.markdown(
+                        f"- {p['product']} `slope: {p['slope']:.1f}`"
+                    )
+
+            with tc2:
+                st.markdown("**📉 Top Declining Products**")
+
+                for p in declining:
+                    st.markdown(
+                        f"- {p['product']} `slope: {p['slope']:.1f}`"
+                    )
+
+        pm = trend_data.get("portfolio_monthly_sales", [])
+
+        if pm:
+            pm_df = pd.DataFrame(pm).set_index("month")
+
+            st.markdown("**Monthly Portfolio Sales**")
+
+            st.line_chart(pm_df["sales_volume"])
+
+    st.divider()
+
+    st.markdown("**Product Summary Table**")
+
+    def _highlight_underperf(row):
+        color = (
+            "background-color: #fef2f2;"
+            if row.get("underperformance_flag")
+            else ""
+        )
+
+        return [color] * len(row)
+
+    display_cols = [
+        "product",
+        "total_sales",
+        "total_interactions",
+        "unique_doctors",
+        "conversion_rate",
+        "avg_interest",
+        "follow_up_rate",
+        "qoq_growth",
+        "trend",
+        "top_region",
+        "underperformance_flag",
+    ]
+
+    display_cols = [
+        c for c in display_cols
+        if c in df_summary.columns
+    ]
+
+    styled = (
+        df_summary[display_cols]
+        .style
+        .apply(_highlight_underperf, axis=1)
+    )
+
+    st.dataframe(
+        styled,
+        use_container_width=True
+    )
+
+    underperf = (
+        df_summary[
+            df_summary.get("underperformance_flag", False) == True
+        ]
+        if "underperformance_flag" in df_summary.columns
+        else pd.DataFrame()
+    )
+
+    if not underperf.empty:
+        st.warning(
+            f"⚠️ {len(underperf)} product(s) flagged as underperforming."
+        )
+
+        with st.expander("View underperforming products"):
+            for _, row in underperf.iterrows():
+                st.markdown(
+                    f"""
+                    <div style="background:#fef2f2;
+                    border-left:4px solid #ef4444;
+                    padding:8px 12px;
+                    border-radius:6px;
+                    margin-bottom:6px;">
+                    <b>{row['product']}</b>
+                    — Conv: {row.get('conversion_rate',0):.0%}
+                    | Trend: {row.get('trend','—')}
+                    | QoQ: {row.get('qoq_growth',0):.1%}
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+    if region_data:
+        st.divider()
+
+        st.markdown("**🗺️ Regional Breakdown**")
+
+        df_region = pd.DataFrame(region_data)
+
+        st.dataframe(
+            df_region,
+            use_container_width=True
+        )
+
+    st.divider()
+
+    st.markdown("**🔥 Region × Product Sales Heatmap**")
+
+    matrix = get_region_matrix(quarter=quarter_param)
+
+    if matrix and matrix.get("matrix"):
+        df_hm = pd.DataFrame(matrix["matrix"])
+
+        if "region" in df_hm.columns:
+            df_hm = df_hm.set_index("region")
+
+            st.dataframe(
+                df_hm.style.background_gradient(cmap="Blues"),
+                use_container_width=True
+            )
+        else:
+            st.info("No region data in matrix.")
+
+    else:
+        st.info("No region-product matrix available.")
+
+
+def _render_product_detail(product_name, territory_param, quarter_param):
+    st.markdown(f"### 🔍 {product_name} — Individual Report")
+
+    with st.spinner(f"Loading data for {product_name}…"):
+        data = get_product_detail(
+            product_name,
+            territory=territory_param,
+            quarter=quarter_param
+        )
+
+    if not data:
+        st.error("Could not load product detail.")
+        return
+
+    if "error" in data:
+        st.error(data["error"])
+        return
+
+    with st.container(border=True):
+        trend_badge = _trend_badge(
+            data.get("trend", "stable")
+        )
+
+        flag_badge = (
+            " ⚠️ **Underperforming**"
+            if data.get("is_underperforming")
+            else " ✅ On Track"
+        )
+
+        st.markdown(
+            f"**Trend:** {trend_badge} &nbsp;|&nbsp; "
+            f"**Status:** {flag_badge} &nbsp;|&nbsp; "
+            f"**Engagement Depth:** "
+            f"{data.get('engagement_depth', 0):.1f} visits/doctor "
+            f"&nbsp;|&nbsp; "
+            f"**Follow-up Rate:** "
+            f"{data.get('follow_up_rate', 0):.0%}"
+        )
+
+        _kpi_row(data)
+
+    st.divider()
+
+    tab_trend, tab_doctors, tab_region, tab_funnel, tab_obj, tab_qoq = st.tabs([
+        "📈 Trends",
+        "👨‍⚕️ Doctors",
+        "🗺️ Regions",
+        "🔄 Funnel & AIDA",
+        "💬 Objections",
+        "📅 Quarterly"
+    ])
+
+    with tab_trend:
+        col_ms, col_mc = st.columns(2)
+
+        with col_ms:
+            st.markdown("**Monthly Sales Volume**")
+
+            ms = data.get("monthly_sales", [])
+
+            if ms:
+                df_ms = pd.DataFrame(ms).set_index("month")
+
+                st.line_chart(df_ms["sales_volume"])
+
+            else:
+                st.info("No monthly sales data.")
+
+        with col_mc:
+            st.markdown("**Monthly Conversion Rate**")
+
+            mc = data.get("monthly_conversion", [])
+
+            if mc:
+                df_mc = pd.DataFrame(mc).set_index("month")
+
+                st.line_chart(df_mc["conversion_rate"])
+
+            else:
+                st.info("No monthly conversion data.")
+
+        st.markdown(
+            "**📈 Product Adoption Trend "
+            "(Cumulative Unique Doctors)**"
+        )
+
+        at = data.get("adoption_trend", [])
+
+        if at:
+            df_at = pd.DataFrame(at).set_index("month")
+
+            st.area_chart(df_at["cumulative_doctors"])
+
+        else:
+            st.info("No adoption trend data.")
+
+    with tab_doctors:
+        col_top, col_low = st.columns(2)
+
+        with col_top:
+            st.markdown("**🏆 Top Performing Doctors**")
+
+            top_docs = data.get("top_doctors", [])
+
+            if top_docs:
+                st.dataframe(
+                    pd.DataFrame(top_docs),
+                    use_container_width=True
+                )
+
+            else:
+                st.info("No doctor performance data.")
+
+        with col_low:
+            st.markdown("**📉 Lowest Performing Doctors**")
+
+            low_docs = data.get("lowest_doctors", [])
+
+            if low_docs:
+                st.dataframe(
+                    pd.DataFrame(low_docs),
+                    use_container_width=True
+                )
+
+            else:
+                st.info("No data.")
+
+        st.markdown("**Follow-up Analytics**")
+
+        fu = data.get("follow_up_analytics", [])
+
+        if fu:
+            st.dataframe(
+                pd.DataFrame(fu),
+                use_container_width=True
+            )
+
+    with tab_region:
+        st.markdown("**Region Performance Comparison**")
+
+        rc = (
+            data.get("region_comparison", [])
+            or data.get("regional_breakdown", [])
+        )
+
+        if rc:
+            df_rc = pd.DataFrame(rc)
+
+            st.dataframe(
+                df_rc,
+                use_container_width=True
+            )
+
+            region_col = (
+                "region"
+                if "region" in df_rc.columns
+                else df_rc.columns[0]
+            )
+
+            if "total_sales" in df_rc.columns:
+                chart_df = df_rc.set_index(region_col)[
+                    ["total_sales", "conv_rate"]
+                ]
+
+                st.bar_chart(chart_df["total_sales"])
+
+        else:
+            st.info("No regional data available.")
+
+    with tab_funnel:
+        col_f, col_a = st.columns(2)
+
+        with col_f:
+            st.markdown("**Conversion Funnel**")
+
+            funnel = data.get("conversion_funnel", [])
+
+            if funnel:
+                for row in funnel:
+                    st.markdown(
+                        f"""
+                        <div style="background:#f1f5f9;
+                        border-left:4px solid #6366f1;
+                        padding:8px 14px;
+                        border-radius:6px;
+                        margin-bottom:6px;">
+                        <b>{row['stage']}</b>
+                        — <span style="font-size:18px;
+                        color:#6366f1;
+                        font-weight:700;">
+                        {row['count']:,}
+                        </span>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+
+        with col_a:
+            st.markdown("**AIDA Stage Distribution**")
+
+            aida_dist = data.get("aida_distribution", {})
+
+            if aida_dist:
+                _STAGE_COLORS = {
+                    "awareness": "#64748B",
+                    "interest": "#F59E0B",
+                    "desire": "#8B5CF6",
+                    "action": "#10B981"
+                }
+
+                _STAGE_EMOJI = {
+                    "awareness": "👁️",
+                    "interest": "🔍",
+                    "desire": "🔥",
+                    "action": "✅"
+                }
+
+                for stage, count in aida_dist.items():
+                    color = _STAGE_COLORS.get(stage, "#94a3b8")
+                    emoji = _STAGE_EMOJI.get(stage, "•")
+
+                    st.markdown(
+                        f"""
+                        <div style="background:{color}18;
+                        border-left:4px solid {color};
+                        padding:7px 12px;
+                        border-radius:6px;
+                        margin-bottom:5px;">
+                        {emoji}
+                        <b style="color:{color};">
+                        {stage.title()}
+                        </b>
+                        — {count} doctor(s)
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+
+    with tab_obj:
+        col_ob, col_comp = st.columns(2)
+
+        with col_ob:
+            st.markdown("**All Objections**")
+
+            obj = data.get("objection_breakdown", {})
+
+            if obj:
+                df_obj = pd.DataFrame(
+                    sorted(
+                        obj.items(),
+                        key=lambda x: -x[1]
+                    ),
+                    columns=["Objection", "Count"]
+                )
+
+                st.dataframe(
+                    df_obj,
+                    use_container_width=True
+                )
+
+                st.bar_chart(
+                    df_obj.set_index("Objection")["Count"]
+                )
+
+            else:
+                st.info("No objections recorded.")
+
+        with col_comp:
+            st.markdown("**Competitor-related Objections**")
+
+            comp_obj = data.get("competitor_objections", {})
+
+            if comp_obj:
+                df_comp = pd.DataFrame(
+                    sorted(
+                        comp_obj.items(),
+                        key=lambda x: -x[1]
+                    ),
+                    columns=["Objection", "Count"]
+                )
+
+                st.dataframe(
+                    df_comp,
+                    use_container_width=True
+                )
+
+            else:
+                st.info(
+                    "No competitor objections detected."
+                )
+
+    with tab_qoq:
+        st.markdown("**QoQ Performance**")
+
+        qoq = data.get("qoq_performance", [])
+
+        if qoq:
+            df_q = pd.DataFrame(qoq)
+
+            st.dataframe(
+                df_q,
+                use_container_width=True
+            )
+
+            if "total_sales" in df_q.columns:
+                x_col = (
+                    "quarter"
+                    if "quarter" in df_q.columns
+                    else df_q.columns[0]
+                )
+
+                st.bar_chart(
+                    df_q.set_index(x_col)["total_sales"]
+                )
+
+        else:
+            st.info("No quarterly data available.")
+
+    st.divider()
+
+    _render_ai_analysis_card(
+        product_name,
+        data.get("is_underperforming", False)
+    )
+
+
+def _render_ai_analysis_card(
+    product_name: str,
+    is_underperforming: bool
+):
+    label = (
+        "🤖 AI Analysis"
+        + (
+            " — ⚠️ Underperformance Detected"
+            if is_underperforming
+            else ""
+        )
+    )
+
+    with st.expander(label, expanded=False):
+        st.markdown(
+            f"""
+            <div style="background:#eff6ff;
+            border-left:4px solid #3b82f6;
+            padding:10px 14px;
+            border-radius:6px;
+            margin-bottom:12px;
+            font-size:13px;">
+            AI analysis runs when you open this panel.
+            {
+                'This product has been flagged as underperforming.'
+                if is_underperforming
+                else 'This product appears on track, but the AI may surface hidden risks.'
+            }
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        if st.button(
+            "🔍 Generate AI Analysis",
+            key=f"ai_btn_{product_name}",
+            type="primary"
+        ):
+            with st.spinner("Running AI analysis…"):
+                ai = get_product_ai_analysis(product_name)
+
+            st.session_state[
+                f"ai_analysis_{product_name}"
+            ] = ai
+
+        ai = st.session_state.get(
+            f"ai_analysis_{product_name}"
+        )
+
+        if not ai:
+            return
+
+        if "error" in ai:
+            st.error(ai["error"])
+            return
+
+        st.markdown("#### 🔎 Root Causes")
+
+        for rc in ai.get("root_causes", []):
+            st.markdown(
+                f"""
+                <div style="background:#fef2f2;
+                border-left:4px solid #ef4444;
+                padding:8px 12px;
+                border-radius:6px;
+                margin-bottom:5px;
+                font-size:13px;">
+                ❗ {rc}
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        st.markdown("#### 💡 Recommendations")
+
+        for i, rec in enumerate(
+            ai.get("recommendations", []),
+            1
+        ):
+            st.markdown(
+                f"""
+                <div style="background:#f0fdf4;
+                border-left:4px solid #22c55e;
+                padding:8px 12px;
+                border-radius:6px;
+                margin-bottom:5px;
+                font-size:13px;">
+                <b>{i}.</b> {rec}
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        col_qw, col_nba = st.columns(2)
+
+        with col_qw:
+            st.markdown("#### ⚡ Quick Win")
+            st.info(ai.get("quick_win", "—"))
+
+        with col_nba:
+            st.markdown("#### 🎯 Next Best Action")
+            st.success(
+                ai.get("next_best_action", "—")
+            )
+
+        ts = ai.get("territory_suggestion")
+
+        if ts:
+            st.markdown(
+                "#### 🗺️ Territory-Specific Suggestion"
+            )
+
+            st.markdown(
+                f"""
+                <div style="background:#faf5ff;
+                border-left:4px solid #8b5cf6;
+                padding:8px 12px;
+                border-radius:6px;
+                font-size:13px;">
+                {ts}
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        llm_exp = ai.get("llm_explanation")
+
+        if llm_exp:
+            st.markdown("#### 🧠 LLM Deep-Dive")
+            st.markdown(llm_exp)
 
 def sales_assistant_section():
     st.header("🏥 Sales Assistant")
@@ -532,78 +1266,79 @@ def sales_assistant_section():
 
 
 def product_performance_section():
-    st.header("Product Performance")
-    products = get_products()
-    territories = get_territories()
+    st.header("📦 Product Performance")
+
+    try:
+        products_list = (
+            requests.get(f"{BASE_URL}/products", timeout=10)
+            .json()
+            .get("products", [])
+        )
+
+        territories_list = (
+            requests.get(f"{BASE_URL}/territories", timeout=10)
+            .json()
+            .get("territories", [])
+        )
+
+    except Exception:
+        products_list = []
+        territories_list = []
+
     col_p, col_r, col_q = st.columns(3)
+
     with col_p:
-        product_sel = st.selectbox("Product", ["Overall Summary"] + products)
+        product_sel = st.selectbox(
+            "📦 Product",
+            ["— Overall Summary —"] + sorted(products_list),
+            key="pp_product",
+        )
+
     with col_r:
-        territory_sel = st.selectbox("Territory", ["All"] + territories)
+        territory_sel = st.selectbox(
+            "📍 Territory / Region",
+            ["All"] + sorted(territories_list),
+            key="pp_territory",
+        )
+
     with col_q:
-        quarter_sel = st.selectbox("Quarter", ["All", "Q1", "Q2", "Q3", "Q4"])
+        quarter_sel = st.selectbox(
+            "📅 Quarter",
+            ["All", "Q1", "Q2", "Q3", "Q4"],
+            key="pp_quarter",
+        )
 
-    product_param = None if product_sel == "Overall Summary" else product_sel
-    territory_param = None if territory_sel == "All" else territory_sel
-    quarter_param = None if quarter_sel == "All" else quarter_sel
+    product_param = (
+        None
+        if product_sel == "— Overall Summary —"
+        else product_sel
+    )
 
-    if st.button("Load Product Data", type="primary"):
-        with st.spinner("Loading..."):
-            data = get_product_performance(product=product_param, territory=territory_param, quarter=quarter_param)
-            if not data:
-                st.error("No data available.")
-                return
+    territory_param = (
+        None
+        if territory_sel == "All"
+        else territory_sel
+    )
 
-        if product_param:
-            col_m1, col_m2, col_m3, col_m4 = st.columns(4)
-            col_m1.metric("Total Sales", data.get("total_sales", 0))
-            col_m2.metric("Conv", f"{data.get('conversion_rate',0):.1%}")
-            col_m3.metric("Avg Interest", f"{data.get('avg_interest',0):.1f}/5")
-            col_m4.metric("QoQ Growth", f"{data.get('qoq_growth',0):.1%}")
-            st.caption(f"Trend: {data.get('trend','stable')}")
+    quarter_param = (
+        None
+        if quarter_sel == "All"
+        else quarter_sel
+    )
 
-            monthly = data.get("monthly_sales", [])
-            if monthly:
-                df_m = pd.DataFrame(monthly)
-                df_m["month"] = pd.to_datetime(df_m["month"])
-                df_m = df_m.set_index("month")
-                st.subheader("Monthly Sales Trend")
-                st.line_chart(df_m["sales_volume"])
+    st.divider()
 
-            quarterly = data.get("quarterly_table", [])
-            if quarterly:
-                st.subheader("Quarterly Performance")
-                st.dataframe(pd.DataFrame(quarterly), use_container_width=True)
-
-            if data.get("is_underperforming"):
-                st.warning("⚠️ This product is underperforming.")
-                if st.button("Why is this product underperforming?"):
-                    with st.spinner("Generating insight..."):
-                        explanation = get_llm_product_insight(product_param)
-                        st.markdown(explanation)
-        else:
-            summary = data.get("summary", [])
-            quarterly = data.get("quarterly_table", [])
-            if summary:
-                st.subheader("Product Summary")
-                df_s = pd.DataFrame(summary)
-                st.dataframe(df_s, use_container_width=True)
-                st.subheader("Quarterly Sales")
-                if quarterly:
-                    st.dataframe(pd.DataFrame(quarterly), use_container_width=True)
-                st.subheader("Region‑wise Heatmap")
-                matrix = get_region_matrix(quarter=quarter_param)
-                if matrix and matrix.get("matrix"):
-                    df_hm = pd.DataFrame(matrix["matrix"])
-                    if "region" in df_hm.columns:
-                        df_hm = df_hm.set_index("region")
-                        st.dataframe(df_hm.style.background_gradient(cmap="Blues"), use_container_width=True)
-                    else:
-                        st.info("No region data.")
-                else:
-                    st.info("No region matrix available.")
-            else:
-                st.info("No data found for the selected filters.")
+    if product_param:
+        _render_product_detail(
+            product_param,
+            territory_param,
+            quarter_param
+        )
+    else:
+        _render_overall_summary(
+            territory_param,
+            quarter_param
+        )
 
 
 def doctor_review_section():

@@ -345,6 +345,59 @@ def get_product_aida(doctor_id: str, time_sec: int = Query(60), employee_type: s
         "product_aida": product_aida_list,
     })
 
+@app.get("/analytics/product_performance/detail/{product_name}")
+def product_performance_detail(
+    product_name: str,
+    territory:    Optional[str] = Query(None),
+    quarter:      Optional[str] = Query(None),
+):
+    detail = product_perf_engine.get_product_detail(
+        product_name, territory=territory, quarter=quarter
+    )
+    if "error" in detail:
+        raise HTTPException(status_code=404, detail=detail["error"])
+    detail["regional_breakdown"] = product_perf_engine.get_region_breakdown(
+        product_name=product_name, quarter=quarter
+    )
+    return JSONResponse(content=detail)
+
+@app.get("/analytics/product_performance/summary")
+def product_performance_summary(
+    territory: Optional[str] = Query(None),
+    quarter:   Optional[str] = Query(None),
+):
+    summary_df = product_perf_engine.get_overall_summary(territory=territory, quarter=quarter)
+    return JSONResponse(content={
+        "summary": summary_df.to_dict(orient="records") if not summary_df.empty else []
+    })
+
+@app.get("/analytics/region_breakdown")
+def region_breakdown(
+    product: Optional[str] = Query(None),
+    quarter: Optional[str] = Query(None),
+):
+    data = product_perf_engine.get_region_breakdown(
+        product_name=product, quarter=quarter
+    )
+    return JSONResponse(content={"regional_breakdown": data})
+
+@app.get("/analytics/trend_analysis")
+def trend_analysis(
+    territory: Optional[str] = Query(None),
+    quarter:   Optional[str] = Query(None),
+):
+    data = product_perf_engine.get_trend_analysis(territory=territory, quarter=quarter)
+    return JSONResponse(content=data)
+
+@app.get("/llm/product_ai_analysis/{product_name}")
+def product_ai_analysis(product_name: str):
+    analysis = product_perf_engine.generate_ai_analysis(
+        product_name=product_name,
+        llm_engine=llm_engine,   # None-safe: engine checks internally
+    )
+    if "error" in analysis:
+        raise HTTPException(status_code=404, detail=analysis["error"])
+    return JSONResponse(content=analysis)
 
 if __name__ == "__main__":
     import uvicorn
