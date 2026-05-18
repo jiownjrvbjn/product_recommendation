@@ -1,0 +1,2 @@
+{"timestamp": "2026-05-18T05:11:51.660571", "doctor_id": "D_BAN_01", "method": "generate_meeting_playbook", "prompt_version": "2.0.0", "latency_ms": 5901.8, "token_count": 0, "outcome_logged": false, "success": true}
+{"timestamp": "2026-05-18T05:13:00.404036", "doctor_id": "product:AcneFree", "method": "explain_product_underperformance", "prompt_version": "2.0.0", "latency_ms": 7949.1, "token_count": 0, "outcome_logged": false, "success": false}

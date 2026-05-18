@@ -1,5 +1,5 @@
 from analytics_engine import TrendAnalytics
-from ml_engines import ProductRecommendationEngine
+from main.ml.ml_engines import ProductRecommendationEngine
 import pandas as pd
 import random
 

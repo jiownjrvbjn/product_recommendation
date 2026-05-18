@@ -1,0 +1,15 @@
+{
+  "generated_at": "2026-05-18T04:52:38.471467",
+  "period": "all-time + last_7_days",
+  "summary": {
+    "total_feedback_records": 0,
+    "recent_feedback_7d": 0,
+    "prompt_versions_tracked": 0,
+    "flagged_versions": [],
+    "overall_win_rate": 0.0,
+    "aida_stage_progression_rate": 0.0
+  },
+  "per_version_all_time": {},
+  "per_version_last_7d": {},
+  "llm_call_stats": {}
+}

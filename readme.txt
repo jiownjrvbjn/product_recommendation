@@ -1,4 +1,4 @@
 --> To run Server ``` python -m uvicorn api.server:app --reload  ```
---> To run APP ```streamlit run app/app.py ```
+--> To run APP ```python -m streamlit run app/app.py  ```
 --> To add version of all the libraries```uv pip freeze > requirements.txt```  
---> To install all the libraries ```uv pip install requirements.txt```
+--> To install all the libraries ```uv pip install -r requirements.txt```

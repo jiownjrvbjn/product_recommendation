@@ -1,0 +1,122 @@
+[
+  {
+    "doctor_features": {
+      "aida_stage": "awareness",
+      "persona": "analytical",
+      "conversion_rate": 0.15,
+      "avg_interest": 2.1
+    },
+    "ideal_playbook": {
+      "opening_line": "Good morning, Dr. Sharma. I'd like to share a brief 3-slide overview of CardioMax — a peer-reviewed study showed 34% better LDL reduction vs. standard care in patients matching your profile.",
+      "talking_point_1": "Present the JUPITER trial data showing CardioMax efficacy in the 50-65 age cohort — exactly the segment you see most.",
+      "talking_point_2": "Compare side-effect profile vs. competitor: CardioMax has 40% fewer GI complaints in the same cohort.",
+      "product_focus": "CardioMax — highest evidence base for analytical prescribers, two published RCTs.",
+      "closing_question": "Would you be open to reviewing a one-pager on CardioMax before our next visit?"
+    }
+  },
+  {
+    "doctor_features": {
+      "aida_stage": "awareness",
+      "persona": "resistant",
+      "conversion_rate": 0.10,
+      "avg_interest": 1.8
+    },
+    "ideal_playbook": {
+      "opening_line": "Dr. Patel, I won't take more than two minutes — I just wanted to leave one data point with you that's changed how some of your peers in cardiology are approaching statin resistance.",
+      "talking_point_1": "Don't push for a prescription today — simply plant the seed: 'Doctors with similar patient loads found this useful for their statin-resistant segment.'",
+      "talking_point_2": "Acknowledge the most common objection upfront: 'I know you're already using Rosu-X — this is for the subset where it underperforms.'",
+      "product_focus": "CardioMax — position as a niche add-on, not a replacement.",
+      "closing_question": "Is there a 5-minute slot in your next month where I could show you one patient case study?"
+    }
+  },
+  {
+    "doctor_features": {
+      "aida_stage": "interest",
+      "persona": "analytical",
+      "conversion_rate": 0.28,
+      "avg_interest": 3.4
+    },
+    "ideal_playbook": {
+      "opening_line": "Dr. Mehta, last visit you asked about the mechanism of action — I brought the full pharmacokinetic comparison you requested.",
+      "talking_point_1": "Walk through the head-to-head comparison chart: CardioMax vs. Rosu-X on efficacy, onset, and tolerability.",
+      "talking_point_2": "Tie to their patient profile: 'For your diabetic hypertensives, CardioMax's renal safety data is particularly relevant.'",
+      "product_focus": "CardioMax — lead with clinical comparison data, not brand messaging.",
+      "closing_question": "Shall I leave a sample pack for 3 patients so you can compare outcomes firsthand?"
+    }
+  },
+  {
+    "doctor_features": {
+      "aida_stage": "interest",
+      "persona": "emotional",
+      "conversion_rate": 0.30,
+      "avg_interest": 3.6
+    },
+    "ideal_playbook": {
+      "opening_line": "Dr. Rao, I remember you mentioned a patient last visit who was struggling with adherence — I thought of him when I read this case study.",
+      "talking_point_1": "Share the patient story: 62-year-old diabetic hypertensive who switched to CardioMax and halved his pill burden, improving adherence by 60%.",
+      "talking_point_2": "Ask: 'Do you have patients in a similar situation where a once-daily option could make a real difference?'",
+      "product_focus": "CardioMax — frame around patient outcomes and reduced pill burden.",
+      "closing_question": "Would it help to trial CardioMax with just two or three of those patients and compare their adherence logs next visit?"
+    }
+  },
+  {
+    "doctor_features": {
+      "aida_stage": "desire",
+      "persona": "fast_decision",
+      "conversion_rate": 0.48,
+      "avg_interest": 4.1
+    },
+    "ideal_playbook": {
+      "opening_line": "Dr. Joshi, you've seen the data — let's talk about making CardioMax the first-line choice for your LDL-resistant segment.",
+      "talking_point_1": "Summarise in 30 seconds: 'CardioMax — best-in-class LDL reduction, once daily, lowest GI burden. You've already seen the data.'",
+      "talking_point_2": "Offer the path of least resistance: 'I can have a 30-day sample delivered to your clinic by Friday.'",
+      "product_focus": "CardioMax — get the prescription commitment today, not next visit.",
+      "closing_question": "Can I put you down for a trial prescription for your next 5 LDL-resistant patients?"
+    }
+  },
+  {
+    "doctor_features": {
+      "aida_stage": "desire",
+      "persona": "analytical",
+      "conversion_rate": 0.44,
+      "avg_interest": 4.0
+    },
+    "ideal_playbook": {
+      "opening_line": "Dr. Krishnamurthy, the real-world outcomes data from the 1,200-patient registry study just published — I know you've been waiting for this.",
+      "talking_point_1": "Present the registry data: 'In patients matching your profile, CardioMax showed 31% lower MACE events at 24 months vs. standard care.'",
+      "talking_point_2": "Address the remaining hesitation: 'I know cost was a concern — here's the formulary coverage update for your district.'",
+      "product_focus": "CardioMax — real-world evidence is the final piece for evidence-driven prescribers.",
+      "closing_question": "With the registry data and formulary update, what would you need to start a trial prescription this week?"
+    }
+  },
+  {
+    "doctor_features": {
+      "aida_stage": "action",
+      "persona": "fast_decision",
+      "conversion_rate": 0.65,
+      "avg_interest": 4.5
+    },
+    "ideal_playbook": {
+      "opening_line": "Dr. Nair, thank you for your continued confidence in CardioMax — let's make sure your patients keep getting the best of it.",
+      "talking_point_1": "Reinforce success: 'Your patients on CardioMax are showing 28% better adherence than the district average — you're ahead of the curve.'",
+      "talking_point_2": "Introduce the complementary product: 'NervaQ pairs well with CardioMax for your diabetic neuropathy patients — same once-daily convenience.'",
+      "product_focus": "NervaQ — upsell for the diabetic complication segment already trusting the brand.",
+      "closing_question": "Which 3 patients on CardioMax do you think would benefit most from adding NervaQ?"
+    }
+  },
+  {
+    "doctor_features": {
+      "aida_stage": "action",
+      "persona": "emotional",
+      "conversion_rate": 0.60,
+      "avg_interest": 4.3
+    },
+    "ideal_playbook": {
+      "opening_line": "Dr. Pillai, I've been thinking about the patient you mentioned last visit — the one who finally got her LDL under control. That's the kind of outcome that makes this work worthwhile.",
+      "talking_point_1": "Celebrate the win together: 'Your patients on CardioMax are doing well — I'd love to collect one of their success stories for our clinical newsletter, if you're open to it.'",
+      "talking_point_2": "Introduce loyalty program: 'We're starting a patient adherence support program — free pill organisers and SMS reminders for your CardioMax patients.'",
+      "product_focus": "CardioMax adherence programme — deepen loyalty and patient outcomes.",
+      "closing_question": "Would you like to nominate 5 patients for the adherence support programme to launch next month?"
+    }
+  }
+]

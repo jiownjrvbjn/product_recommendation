@@ -1,23 +1,38 @@
 """
 analytics_engine.py
 -----------------------------
-AI Sales Assistant Engine with:
-- AIDA Stage Classification (Awareness / Interest / Desire / Action)
-- Intent Score (interest + follow_up + recent_activity)
-- Doctor Persona Classification
-- 3-Layer Product Filtering (AIDA → Score → Time)
-- Structured product output (primary / support / closing / reminder)
-- Next Best Action engine
-- Visit Success Predictor
-- Doctor Rating formula from plan (patient_load, publications, social_reach, conv_rate)
-- Product Score formula from plan (conv_rate, avg_interest, follow_up, recent_trend)
-- Sales volume tracking, QoQ growth, territory/quarter filters
-- No auto employee mapping — employee_type comes from UI
+AI Sales Assistant Engine — v6.0 (ML-backed)
+
+Changes vs v5:
+  - Added set_model_registry() / module-level _MODEL_REGISTRY + _FEATURE_STORE
+  - AIDAClassifier.classify()       → ML first, rule-based fallback
+  - PersonaClassifier.classify()    → ML first, rule-based fallback
+  - VisitSuccessPredictor.predict() → ML conversion model first, formula fallback
+  - All other classes and API response shapes UNCHANGED
 """
 import pandas as pd
 import numpy as np
 from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta
+
+# ── ML layer — imported only when available; falls back gracefully ────────────
+try:
+    from main.ml.model_registry import ModelRegistry
+    from main.ml.feature_extractor import FeatureExtractor, FeatureStore
+    _ML_AVAILABLE = True
+except ImportError:
+    _ML_AVAILABLE = False
+
+# Module-level singletons — set once by server.py at startup via set_model_registry()
+_MODEL_REGISTRY = None
+_FEATURE_STORE  = None
+
+
+def set_model_registry(registry, feature_store) -> None:
+    """Called by api/server.py lifespan after ModelRegistry.load_all()."""
+    global _MODEL_REGISTRY, _FEATURE_STORE
+    _MODEL_REGISTRY = registry
+    _FEATURE_STORE  = feature_store
 
 
 # ─────────────────────────────────────────────
@@ -319,134 +334,133 @@ class ObjectionResolutionTracker:
 
 
 # ─────────────────────────────────────────────
-# AIDA CLASSIFIER
+# AIDA CLASSIFIER  (ML-backed)
 # ─────────────────────────────────────────────
 class AIDAClassifier:
-    """
-    Classifies doctor into AIDA stage based on behavioral signals.
-    """
-    STAGES = ["awareness", "interest", "desire", "action"]
+    STAGES       = ["awareness", "interest", "desire", "action"]
     STAGE_LABELS = {s: s.capitalize() for s in STAGES}
     STAGE_COLORS = {
         "awareness": "#64748B", "interest": "#F59E0B",
-        "desire": "#8B5CF6", "action": "#10B981",
+        "desire": "#8B5CF6",    "action":   "#10B981",
     }
     STAGE_EMOJI = {
         "awareness": "👁️", "interest": "🔍", "desire": "🔥", "action": "✅",
     }
 
     def classify(self, doctor_df: pd.DataFrame) -> Dict[str, Any]:
-        doctor_df = doctor_df.copy()
+        # ── Empty fallback ────────────────────────────────────────────────
         if doctor_df.empty:
             return {
-                "aida_stage": "awareness",
-                "aida_stage_index": 0,
+                "aida_stage": "awareness", "aida_stage_index": 0,
                 "aida_label": "Awareness",
                 "aida_color": self.STAGE_COLORS["awareness"],
                 "aida_emoji": self.STAGE_EMOJI["awareness"],
                 "aida_confidence": 0.5,
                 "aida_signals": {"interactions": 0, "conversion_rate": 0, "avg_interest": 0, "follow_up_rate": 0},
                 "stage_guidance": self._stage_guidance("awareness"),
-                "all_stages": self.STAGES,
-                "stage_colors": self.STAGE_COLORS,
-                "stage_labels": self.STAGE_LABELS,
-                "stage_emojis": self.STAGE_EMOJI,
+                "all_stages": self.STAGES, "stage_colors": self.STAGE_COLORS,
+                "stage_labels": self.STAGE_LABELS, "stage_emojis": self.STAGE_EMOJI,
             }
 
-        doctor_df["outcome"] = doctor_df["outcome"].astype(str).str.strip().str.lower()
+        # ── ML path ───────────────────────────────────────────────────────
+        if _MODEL_REGISTRY and _MODEL_REGISTRY.aida and _FEATURE_STORE:
+            try:
+                doc_id = str(doctor_df["doctor_id"].iloc[0]).strip()
+                feats  = _FEATURE_STORE.get(doc_id)
+                result = _MODEL_REGISTRY.aida.predict(feats)
+                # Ensure guidance dict is present (model wrapper may not include _stage_guidance)
+                if "stage_guidance" not in result:
+                    result["stage_guidance"] = self._stage_guidance(result["aida_stage"])
+                return result
+            except Exception:
+                pass   # fall through to rule-based
+
+        # ── Rule-based fallback ───────────────────────────────────────────
+        doctor_df = doctor_df.copy()
+        doctor_df["outcome"]   = doctor_df["outcome"].astype(str).str.strip().str.lower()
         doctor_df["follow_up"] = doctor_df["follow_up"].astype(str).str.strip().str.lower()
 
-        interactions = len(doctor_df)
+        interactions    = len(doctor_df)
         conversion_rate = (doctor_df["outcome"] == "positive").sum() / max(interactions, 1)
-        avg_interest = doctor_df["interest_level"].mean()
-        follow_up_rate = (doctor_df["follow_up"] == "yes").sum() / max(interactions, 1)
+        avg_interest    = doctor_df["interest_level"].mean()
+        follow_up_rate  = (doctor_df["follow_up"] == "yes").sum() / max(interactions, 1)
 
         if conversion_rate >= 0.5:
-            stage = "action"
-            confidence = min(0.95, 0.5 + conversion_rate * 0.45)
+            stage, confidence = "action",    min(0.95, 0.5 + conversion_rate * 0.45)
         elif avg_interest >= 4 and follow_up_rate > 0.4:
-            stage = "desire"
-            confidence = min(0.9, 0.4 + avg_interest * 0.08 + follow_up_rate * 0.3)
+            stage, confidence = "desire",    min(0.9,  0.4 + avg_interest * 0.08 + follow_up_rate * 0.3)
         elif avg_interest >= 3 and conversion_rate < 0.3:
-            stage = "interest"
-            confidence = min(0.85, 0.3 + avg_interest * 0.1 + (1 - conversion_rate) * 0.2)
+            stage, confidence = "interest",  min(0.85, 0.3 + avg_interest * 0.1 + (1 - conversion_rate) * 0.2)
         else:
-            stage = "awareness"
-            confidence = min(0.8, 0.4 + (1 - min(avg_interest / 5, 1)) * 0.4)
-
-        stage_idx = self.STAGES.index(stage)
-        guidance = self._stage_guidance(stage)
+            stage, confidence = "awareness", min(0.8,  0.4 + (1 - min(avg_interest / 5, 1)) * 0.4)
 
         return {
-            "aida_stage": stage,
-            "aida_stage_index": stage_idx,
-            "aida_label": self.STAGE_LABELS[stage],
-            "aida_color": self.STAGE_COLORS[stage],
-            "aida_emoji": self.STAGE_EMOJI[stage],
-            "aida_confidence": round(confidence, 2),
+            "aida_stage":       stage,
+            "aida_stage_index": self.STAGES.index(stage),
+            "aida_label":       self.STAGE_LABELS[stage],
+            "aida_color":       self.STAGE_COLORS[stage],
+            "aida_emoji":       self.STAGE_EMOJI[stage],
+            "aida_confidence":  round(confidence, 2),
             "aida_signals": {
-                "interactions": interactions,
+                "interactions":    interactions,
                 "conversion_rate": round(conversion_rate, 3),
-                "avg_interest": round(avg_interest, 2),
-                "follow_up_rate": round(follow_up_rate, 3),
+                "avg_interest":    round(avg_interest, 2),
+                "follow_up_rate":  round(follow_up_rate, 3),
             },
-            "stage_guidance": guidance,
-            "all_stages": self.STAGES,
-            "stage_colors": self.STAGE_COLORS,
-            "stage_labels": self.STAGE_LABELS,
-            "stage_emojis": self.STAGE_EMOJI,
+            "stage_guidance": self._stage_guidance(stage),
+            "all_stages":     self.STAGES,
+            "stage_colors":   self.STAGE_COLORS,
+            "stage_labels":   self.STAGE_LABELS,
+            "stage_emojis":   self.STAGE_EMOJI,
         }
 
-    def _stage_guidance(self, stage):
+    def _stage_guidance(self, stage: str) -> Dict[str, str]:
         guidance = {
             "awareness": {
-                "what_to_say": "Introduce your brand. Lead with a bold stat or unmet need.",
-                "what_to_show": "One-pager or product brief.",
+                "what_to_say":   "Introduce your brand. Lead with a bold stat or unmet need.",
+                "what_to_show":  "One-pager or product brief.",
                 "what_to_avoid": "Avoid pushing for prescriptions.",
-                "next_step": "Leave a visual aid. Book a follow-up.",
+                "next_step":     "Leave a visual aid. Book a follow-up.",
             },
             "interest": {
-                "what_to_say": "Share clinical comparison data.",
-                "what_to_show": "Clinical study summaries, comparison charts.",
+                "what_to_say":   "Share clinical comparison data.",
+                "what_to_show":  "Clinical study summaries, comparison charts.",
                 "what_to_avoid": "Avoid making it a one-way pitch.",
-                "next_step": "Offer a trial sample.",
+                "next_step":     "Offer a trial sample.",
             },
             "desire": {
-                "what_to_say": "Reinforce conviction with patient success stories.",
-                "what_to_show": "Patient case studies, KOL endorsements.",
+                "what_to_say":   "Reinforce conviction with patient success stories.",
+                "what_to_show":  "Patient case studies, KOL endorsements.",
                 "what_to_avoid": "Avoid discounting too early.",
-                "next_step": "Push for a trial prescription.",
+                "next_step":     "Push for a trial prescription.",
             },
             "action": {
-                "what_to_say": "Maintain momentum, upsell complementary products.",
-                "what_to_show": "Volume data, exclusive programs.",
+                "what_to_say":   "Maintain momentum, upsell complementary products.",
+                "what_to_show":  "Volume data, exclusive programs.",
                 "what_to_avoid": "Don't re-sell what they already believe in.",
-                "next_step": "Secure repeat orders.",
+                "next_step":     "Secure repeat orders.",
             },
         }
         return guidance.get(stage, guidance["awareness"])
 
 
 # ─────────────────────────────────────────────
-# INTENT SCORE ENGINE
+# INTENT SCORE ENGINE  (unchanged)
 # ─────────────────────────────────────────────
 class IntentScoreEngine:
     def compute(self, doctor_df: pd.DataFrame) -> Dict[str, Any]:
         doctor_df = doctor_df.copy()
         if doctor_df.empty:
             return {
-                "intent_score": 0,
-                "intent_label": "Low Intent",
-                "intent_color": "#EF4444",
-                "pitch_aggression": "soft",
+                "intent_score": 0, "intent_label": "Low Intent",
+                "intent_color": "#EF4444", "pitch_aggression": "soft",
                 "components": {"interest_norm": 0, "follow_up_rate": 0, "recent_activity": 0},
             }
         doctor_df["interaction_date"] = pd.to_datetime(doctor_df["interaction_date"], dayfirst=True, errors="coerce")
         doctor_df["follow_up"] = doctor_df["follow_up"].astype(str).str.strip().str.lower()
 
-        avg_interest = doctor_df["interest_level"].mean()
-        interest_norm = min(avg_interest / 5.0, 1.0)
-
+        avg_interest   = doctor_df["interest_level"].mean()
+        interest_norm  = min(avg_interest / 5.0, 1.0)
         follow_up_rate = (doctor_df["follow_up"] == "yes").sum() / max(len(doctor_df), 1)
 
         latest = doctor_df["interaction_date"].max()
@@ -456,47 +470,47 @@ class IntentScoreEngine:
             recent = doctor_df[doctor_df["interaction_date"] >= (latest - timedelta(days=30))]
             recent_activity = len(recent) / max(len(doctor_df), 1)
 
-        intent_score = 0.4 * interest_norm + 0.3 * follow_up_rate + 0.3 * recent_activity
-        intent_score = round(min(intent_score, 1.0), 3)
+        intent_score = round(min(0.4 * interest_norm + 0.3 * follow_up_rate + 0.3 * recent_activity, 1.0), 3)
 
         if intent_score >= 0.65:
-            intent_label = "High Intent"
-            intent_color = "#10B981"
-            pitch_aggression = "aggressive"
+            intent_label, intent_color, pitch_aggression = "High Intent", "#10B981", "aggressive"
         elif intent_score >= 0.40:
-            intent_label = "Moderate Intent"
-            intent_color = "#F59E0B"
-            pitch_aggression = "balanced"
+            intent_label, intent_color, pitch_aggression = "Moderate Intent", "#F59E0B", "balanced"
         else:
-            intent_label = "Low Intent"
-            intent_color = "#EF4444"
-            pitch_aggression = "soft"
+            intent_label, intent_color, pitch_aggression = "Low Intent", "#EF4444", "soft"
 
         return {
-            "intent_score": intent_score,
-            "intent_label": intent_label,
-            "intent_color": intent_color,
-            "pitch_aggression": pitch_aggression,
+            "intent_score": intent_score, "intent_label": intent_label,
+            "intent_color": intent_color, "pitch_aggression": pitch_aggression,
             "components": {
-                "interest_norm": round(interest_norm, 3),
-                "follow_up_rate": round(follow_up_rate, 3),
+                "interest_norm":   round(interest_norm, 3),
+                "follow_up_rate":  round(follow_up_rate, 3),
                 "recent_activity": round(recent_activity, 3),
             },
         }
 
 
 # ─────────────────────────────────────────────
-# DOCTOR PERSONA CLASSIFIER
+# DOCTOR PERSONA CLASSIFIER  (ML-backed)
 # ─────────────────────────────────────────────
 class PersonaClassifier:
     def classify(self, doctor_df: pd.DataFrame, doctor_info: Dict) -> Dict[str, Any]:
         if doctor_df.empty:
             return {
-                "persona": "analytical",
-                "label": "🔬 Analytical",
-                "description": "Evidence-driven.",
-                "approach": "Lead with clinical evidence.",
+                "persona": "analytical", "label": "🔬 Analytical",
+                "description": "Evidence-driven.", "approach": "Lead with clinical evidence.",
+                "persona_drift": False,
             }
+
+        # ── ML path ───────────────────────────────────────────────────────
+        if _MODEL_REGISTRY and _MODEL_REGISTRY.persona:
+            try:
+                doc_id = str(doctor_df["doctor_id"].iloc[0]).strip()
+                return _MODEL_REGISTRY.persona.predict(doc_id, doctor_df)
+            except Exception:
+                pass
+
+        # ── Rule-based fallback ───────────────────────────────────────────
         doctor_df = doctor_df.copy()
         if "objection" not in doctor_df.columns:
             doctor_df["objection"] = doctor_df["objection_type"].astype(str).str.lower() \
@@ -505,10 +519,10 @@ class PersonaClassifier:
             doctor_df["objection"] = doctor_df["objection"].astype(str).str.lower()
         doctor_df["outcome"] = doctor_df["outcome"].astype(str).str.lower()
 
-        conversion = (doctor_df["outcome"] == "positive").sum() / max(len(doctor_df), 1)
+        conversion   = (doctor_df["outcome"] == "positive").sum() / max(len(doctor_df), 1)
         avg_interest = doctor_df["interest_level"].mean() if not doctor_df.empty else 0
         publications = doctor_info.get("publications_count", 0)
-        experience = doctor_info.get("experience_years", 0)
+        experience   = doctor_info.get("experience_years", 0)
         has_persistent_obj = any(
             "not interested" in o or "price" in o or "already" in o
             for o in doctor_df["objection"]
@@ -521,40 +535,18 @@ class PersonaClassifier:
             "fast_decision": conversion * 0.5 + avg_interest / 5 * 0.3 + (1 - experience / 40) * 0.2,
             "resistant":     (1 - conversion) * 0.4 + (1 - follow_up) * 0.3 + (0.3 if has_persistent_obj else 0),
         }
-
         persona = max(scores, key=scores.get)
-
         descriptions = {
-            "analytical": {
-                "label": "🔬 Analytical",
-                "description": "Evidence-driven. Responds to data, clinical trials, and peer publications.",
-                "approach": "Lead with clinical evidence. Bring published studies. Avoid emotional appeals.",
-            },
-            "emotional": {
-                "label": "❤️ Relationship-Driven",
-                "description": "Values trust and relationship. Responds well to rapport and stories.",
-                "approach": "Build personal rapport first. Use patient success stories. Follow up consistently.",
-            },
-            "fast_decision": {
-                "label": "⚡ Fast Decision Maker",
-                "description": "Decides quickly. Responds to clear value props and efficiency.",
-                "approach": "Get to the point fast. One clear CTA. No long pitches.",
-            },
-            "resistant": {
-                "label": "🛡️ Resistant / Skeptical",
-                "description": "Hard to convert. Has persistent objections or competitor loyalty.",
-                "approach": "Don't push hard. Plant seeds. Address objections with data, not pressure.",
-            },
+            "analytical":    {"label": "🔬 Analytical",          "description": "Evidence-driven. Responds to data, clinical trials, and peer publications.", "approach": "Lead with clinical evidence. Bring published studies. Avoid emotional appeals."},
+            "emotional":     {"label": "❤️ Relationship-Driven",  "description": "Values trust and relationship. Responds well to rapport and stories.",       "approach": "Build personal rapport first. Use patient success stories. Follow up consistently."},
+            "fast_decision": {"label": "⚡ Fast Decision Maker",  "description": "Decides quickly. Responds to clear value props and efficiency.",              "approach": "Get to the point fast. One clear CTA. No long pitches."},
+            "resistant":     {"label": "🛡️ Resistant / Skeptical","description": "Hard to convert. Has persistent objections or competitor loyalty.",           "approach": "Don't push hard. Plant seeds. Address objections with data, not pressure."},
         }
-
-        return {
-            "persona": persona,
-            **descriptions[persona],
-        }
+        return {"persona": persona, "persona_drift": False, **descriptions[persona]}
 
 
 # ─────────────────────────────────────────────
-# NEXT BEST ACTION ENGINE
+# NEXT BEST ACTION ENGINE  (unchanged)
 # ─────────────────────────────────────────────
 class NextBestActionEngine:
     def generate(self, aida_stage: str, intent_score: float, persona: str, top_product: str) -> Dict[str, Any]:
@@ -564,71 +556,70 @@ class NextBestActionEngine:
         goal = f"Move from {aida_stage.capitalize()} → {stage_transitions[aida_stage]}"
 
         action_map = {
-            ("awareness", "soft"): ("Introduce brand briefly", "Leave a single visual aid"),
-            ("awareness", "balanced"): ("Share a compelling product stat", "May I share more next visit?"),
-            ("awareness", "aggressive"): ("Pitch one key product", "Book a detailed follow-up"),
-            ("interest", "soft"): ("Share clinical comparison", "Ask about their patients"),
-            ("interest", "balanced"): ("Position against competitor", "Would you like to trial?"),
-            ("interest", "aggressive"): ("Push for trial prescription", "Offer a sample and set follow-up"),
-            ("desire", "soft"): ("Reinforce with case study", "When can we start?"),
-            ("desire", "balanced"): ("Use KOL endorsement", "Push for prescription commitment"),
-            ("desire", "aggressive"): ("Close with urgency", "Immediate prescription?"),
-            ("action", "soft"): ("Thank and maintain rapport", "Check satisfaction"),
-            ("action", "balanced"): ("Upsell complementary product", "Share milestones"),
-            ("action", "aggressive"): ("Introduce second product", "Secure repeat orders"),
+            ("awareness", "soft"):      ("Introduce brand briefly",        "Leave a single visual aid"),
+            ("awareness", "balanced"):  ("Share a compelling product stat", "May I share more next visit?"),
+            ("awareness", "aggressive"):("Pitch one key product",           "Book a detailed follow-up"),
+            ("interest",  "soft"):      ("Share clinical comparison",       "Ask about their patients"),
+            ("interest",  "balanced"):  ("Position against competitor",     "Would you like to trial?"),
+            ("interest",  "aggressive"):("Push for trial prescription",     "Offer a sample and set follow-up"),
+            ("desire",    "soft"):      ("Reinforce with case study",       "When can we start?"),
+            ("desire",    "balanced"):  ("Use KOL endorsement",             "Push for prescription commitment"),
+            ("desire",    "aggressive"):("Close with urgency",              "Immediate prescription?"),
+            ("action",    "soft"):      ("Thank and maintain rapport",      "Check satisfaction"),
+            ("action",    "balanced"):  ("Upsell complementary product",    "Share milestones"),
+            ("action",    "aggressive"):("Introduce second product",        "Secure repeat orders"),
         }
+        aggression = "aggressive" if intent_score >= 0.65 else ("balanced" if intent_score >= 0.4 else "soft")
+        action_text, cta_text = action_map.get((aida_stage, aggression), ("Engage naturally", "Build rapport"))
 
-        aggression = "balanced" if intent_score >= 0.4 else "soft"
-        if intent_score >= 0.65:
-            aggression = "aggressive"
-
-        key = (aida_stage, aggression)
-        action_text, cta_text = action_map.get(key, ("Engage naturally", "Build rapport"))
-
-        return {
-            "goal": goal,
-            "action": action_text,
-            "cta": cta_text,
-            "product_focus": top_product,
-        }
+        return {"goal": goal, "action": action_text, "cta": cta_text, "product_focus": top_product}
 
 
 # ─────────────────────────────────────────────
-# VISIT SUCCESS PREDICTOR
+# VISIT SUCCESS PREDICTOR  (ML-backed)
 # ─────────────────────────────────────────────
 class VisitSuccessPredictor:
     def predict(self, doctor_df: pd.DataFrame, aida_stage: str, intent_score: float) -> Dict[str, Any]:
         if doctor_df.empty:
             return {"probability": 0, "probability_pct": "0%", "label": "Low Chance", "color": "#EF4444", "emoji": "🔴"}
-        doctor_df = doctor_df.copy()
-        doctor_df["outcome"] = doctor_df["outcome"].astype(str).str.lower()
 
-        base_conversion = (doctor_df["outcome"] == "positive").sum() / max(len(doctor_df), 1)
+        # ── ML conversion model ───────────────────────────────────────────
+        probability = None
+        if _MODEL_REGISTRY and _MODEL_REGISTRY.conversion and _FEATURE_STORE:
+            try:
+                doc_id      = str(doctor_df["doctor_id"].iloc[0]).strip()
+                feats       = _FEATURE_STORE.get(doc_id)
+                probability = _MODEL_REGISTRY.conversion.predict(feats)
+            except Exception:
+                pass
 
-        stage_weights = {"awareness": 0.15, "interest": 0.35, "desire": 0.60, "action": 0.80}
-        stage_weight = stage_weights.get(aida_stage, 0.3)
+        # ── Formula fallback ─────────────────────────────────────────────
+        if probability is None:
+            doctor_df  = doctor_df.copy()
+            doctor_df["outcome"] = doctor_df["outcome"].astype(str).str.lower()
+            base_conv   = (doctor_df["outcome"] == "positive").sum() / max(len(doctor_df), 1)
+            stage_w     = {"awareness": 0.15, "interest": 0.35, "desire": 0.60, "action": 0.80}.get(aida_stage, 0.3)
+            probability = round(min(0.4 * base_conv + 0.35 * stage_w + 0.25 * intent_score, 0.99), 3)
 
-        probability = 0.4 * base_conversion + 0.35 * stage_weight + 0.25 * intent_score
-        probability = round(min(probability, 0.99), 3)
-
+        probability = round(float(probability), 3)
         if probability >= 0.6:
             label, color, emoji = "High Chance", "#10B981", "🟢"
         elif probability >= 0.35:
-            label, color, emoji = "Moderate", "#F59E0B", "🟡"
+            label, color, emoji = "Moderate",    "#F59E0B", "🟡"
         else:
-            label, color, emoji = "Low Chance", "#EF4444", "🔴"
+            label, color, emoji = "Low Chance",  "#EF4444", "🔴"
 
         return {
-            "probability": probability,
+            "probability":     probability,
             "probability_pct": f"{probability * 100:.0f}%",
-            "label": label,
-            "color": color,
-            "emoji": emoji,
+            "label":           label,
+            "color":           color,
+            "emoji":           emoji,
         }
 
 
 # ─────────────────────────────────────────────
-# RECOMMENDATION ENGINE (3-Layer: AIDA → Score → Time)
+# RECOMMENDATION ENGINE (3-Layer: AIDA → Score → Time)  (unchanged)
 # ─────────────────────────────────────────────
 class RecommendationEngine:
     AIDA_PRODUCT_FILTER = {
@@ -660,23 +651,18 @@ class RecommendationEngine:
 
     def score_products(self, doctor_df: pd.DataFrame) -> Dict[str, Any]:
         if doctor_df.empty:
-            return {
-                "recommended": [], "secondary": [], "low_performers": [], "all_products_ranked": []
-            }
+            return {"recommended": [], "secondary": [], "low_performers": [], "all_products_ranked": []}
         results = []
         for product in doctor_df["product_name"].unique():
             p_df = doctor_df[doctor_df["product_name"] == product]
             if p_df.empty:
                 continue
-            conversion = (p_df["outcome"] == "positive").sum() / max(len(p_df), 1)
-            interest = p_df["interest_level"].mean()
-            follow_up = (p_df["follow_up"].astype(str).str.lower() == "yes").sum() / max(len(p_df), 1)
+            conversion   = (p_df["outcome"] == "positive").sum() / max(len(p_df), 1)
+            interest     = p_df["interest_level"].mean()
+            follow_up    = (p_df["follow_up"].astype(str).str.lower() == "yes").sum() / max(len(p_df), 1)
             recent_trend = self._get_product_recent_trend(doctor_df, product)
-
-            score = 0.4 * conversion + 0.3 * (interest / 5) + 0.2 * follow_up + 0.1 * recent_trend
-            score = round(max(score, 0.0), 3)
-
-            total_sales = int(p_df["sales_volume"].sum()) if "sales_volume" in p_df.columns else 0
+            score        = round(max(0.4 * conversion + 0.3 * (interest / 5) + 0.2 * follow_up + 0.1 * recent_trend, 0.0), 3)
+            total_sales  = int(p_df["sales_volume"].sum()) if "sales_volume" in p_df.columns else 0
 
             if interest >= 3.5 and conversion >= 0.5:
                 category = "high_performer"
@@ -688,23 +674,21 @@ class RecommendationEngine:
                 category = "potential"
 
             results.append({
-                "product_name":     product,
-                "score":            score,
-                "conversion_rate":  round(conversion, 3),
-                "avg_interest":     round(interest, 2),
-                "follow_up_rate":   round(follow_up, 3),
-                "recent_trend":     recent_trend,
+                "product_name":       product, "score":           score,
+                "conversion_rate":    round(conversion, 3),
+                "avg_interest":       round(interest, 2),
+                "follow_up_rate":     round(follow_up, 3),
+                "recent_trend":       recent_trend,
                 "total_sales_volume": total_sales,
-                "category":         category,
+                "category":           category,
             })
 
         if not results:
             return {"recommended": [], "secondary": [], "low_performers": [], "all_products_ranked": []}
 
         results.sort(key=lambda x: x["score"], reverse=True)
-        scores = np.array([r["score"] for r in results])
-        mean = np.mean(scores) if len(scores) else 0
-        std = np.std(scores) if len(scores) > 1 else 0
+        scores  = np.array([r["score"] for r in results])
+        mean, std = np.mean(scores), (np.std(scores) if len(scores) > 1 else 0)
 
         recommended, secondary, low = [], [], []
         for r in results:
@@ -715,17 +699,13 @@ class RecommendationEngine:
             else:
                 low.append(r)
 
-        return {
-            "recommended": recommended,
-            "secondary": secondary,
-            "low_performers": low,
-            "all_products_ranked": results,
-        }
+        return {"recommended": recommended, "secondary": secondary,
+                "low_performers": low, "all_products_ranked": results}
 
     def _aida_filter(self, products: List[Dict], aida_stage: str) -> List[Dict]:
         preferred_cats = self.AIDA_PRODUCT_FILTER.get(aida_stage, [])
         preferred = [p for p in products if p["category"] in preferred_cats]
-        rest = [p for p in products if p["category"] not in preferred_cats]
+        rest      = [p for p in products if p["category"] not in preferred_cats]
         return preferred + rest
 
     def _time_rules(self, time_sec: int) -> Dict[str, Any]:
@@ -739,24 +719,19 @@ class RecommendationEngine:
             return {"primary_count": 5, "support_count": 2, "closing_count": 1, "reminder_count": 0, "mode": "long"}
 
     def _apply_event_override(self, time_sec: int, doctor_df: pd.DataFrame) -> Dict[str, Any]:
-        event_type = doctor_df["event_type"].iloc[0] if "event_type" in doctor_df.columns and not doctor_df.empty else None
-        extra_time = doctor_df["event_extra_time_seconds"].iloc[0] if "event_extra_time_seconds" in doctor_df.columns and not doctor_df.empty else 0
-        event_type = str(event_type).strip().lower() if event_type else None
+        event_type  = doctor_df["event_type"].iloc[0] if "event_type" in doctor_df.columns and not doctor_df.empty else None
+        extra_time  = doctor_df["event_extra_time_seconds"].iloc[0] if "event_extra_time_seconds" in doctor_df.columns and not doctor_df.empty else 0
+        event_type  = str(event_type).strip().lower() if event_type else None
         valid_events = {"birthday", "medical_day", "product_launch"}
 
         if event_type not in valid_events:
             return {"adjusted_time": time_sec, "event_active": False, "event_type": None}
-
         adjusted = time_sec + max(int(extra_time), 60)
-        return {
-            "adjusted_time": adjusted,
-            "event_active": True,
-            "event_type": event_type,
-            "push_new_launches": event_type == "product_launch",
-        }
+        return {"adjusted_time": adjusted, "event_active": True, "event_type": event_type,
+                "push_new_launches": event_type == "product_launch"}
 
     def _identify_new_products_global(self, days_threshold: int = 30) -> set:
-        df = self.df.copy()
+        df     = self.df.copy()
         latest = pd.to_datetime(df["interaction_date"], dayfirst=True, errors="coerce").max()
         if pd.isna(latest):
             return set()
@@ -769,60 +744,40 @@ class RecommendationEngine:
         if not products:
             return products
         total_score = sum(p["score"] for p in products) or 1
-        result = []
-        for p in products:
-            suggested_sec = max(10, int((p["score"] / total_score) * total_time))
-            result.append({**p, "suggested_duration_sec": suggested_sec})
-        return result
+        return [{**p, "suggested_duration_sec": max(10, int((p["score"] / total_score) * total_time))} for p in products]
 
-    def build_recommendations(
-        self,
-        doctor_df: pd.DataFrame,
-        scored_products: Dict,
-        selected_time: int,
-        aida_stage: str,
-    ) -> Dict[str, Any]:
+    def build_recommendations(self, doctor_df: pd.DataFrame, scored_products: Dict,
+                               selected_time: int, aida_stage: str) -> Dict[str, Any]:
         if doctor_df.empty or not scored_products.get("all_products_ranked"):
             return {
-                "primary_products": [],
-                "support_products": [],
-                "closing_products": [],
-                "reminder_items": [],
-                "mode": "no_data",
-                "effective_time": selected_time,
-                "event_active": False,
-                "event_type": None,
-                "total_pitched": 0,
+                "primary_products": [], "support_products": [], "closing_products": [],
+                "reminder_items": [], "mode": "no_data", "effective_time": selected_time,
+                "event_active": False, "event_type": None, "total_pitched": 0,
             }
-        event_data = self._apply_event_override(selected_time, doctor_df)
+        event_data     = self._apply_event_override(selected_time, doctor_df)
         effective_time = event_data["adjusted_time"]
-        rules = self._time_rules(effective_time)
-
-        all_ranked = scored_products["all_products_ranked"]
-        aida_ordered = self._aida_filter(all_ranked, aida_stage)
+        rules          = self._time_rules(effective_time)
+        all_ranked     = scored_products["all_products_ranked"]
+        aida_ordered   = self._aida_filter(all_ranked, aida_stage)
 
         if event_data.get("push_new_launches"):
             new_products = self._identify_new_products_global()
             aida_ordered = sorted(aida_ordered, key=lambda x: 1 if x["product_name"] in new_products else 0, reverse=True)
 
-        primary   = aida_ordered[: rules["primary_count"]]
-        support   = aida_ordered[rules["primary_count"]: rules["primary_count"] + rules["support_count"]]
-        closing   = aida_ordered[rules["primary_count"] + rules["support_count"]: rules["primary_count"] + rules["support_count"] + rules["closing_count"]]
-        remaining = aida_ordered[rules["primary_count"] + rules["support_count"] + rules["closing_count"]:]
-        reminder  = remaining[: rules["reminder_count"]]
+        pc, sc, cc, rc = rules["primary_count"], rules["support_count"], rules["closing_count"], rules["reminder_count"]
+        primary  = aida_ordered[:pc]
+        support  = aida_ordered[pc: pc + sc]
+        closing  = aida_ordered[pc + sc: pc + sc + cc]
+        reminder = aida_ordered[pc + sc + cc:][:rc]
 
-        primary  = self._allocate_time_per_product(primary, effective_time)
-        support  = self._allocate_time_per_product(support, max(effective_time // 3, 10))
+        primary = self._allocate_time_per_product(primary, effective_time)
+        support = self._allocate_time_per_product(support, max(effective_time // 3, 10))
 
         return {
-            "primary_products": primary,
-            "support_products": support,
-            "closing_products": closing,
-            "reminder_items": reminder,
-            "mode": rules["mode"],
-            "effective_time": effective_time,
-            "event_active": event_data["event_active"],
-            "event_type": event_data.get("event_type"),
+            "primary_products": primary, "support_products": support,
+            "closing_products": closing, "reminder_items": reminder,
+            "mode": rules["mode"], "effective_time": effective_time,
+            "event_active": event_data["event_active"], "event_type": event_data.get("event_type"),
             "total_pitched": len(primary) + len(support) + len(closing),
         }
 
@@ -831,15 +786,10 @@ class RecommendationEngine:
         publications = self.normalize(doctor_info.get("publications_count", 0), 0, 50)
         social_reach = self.normalize(doctor_info.get("social_media_reach", 0), 0, 10000)
         conversion   = doctor_info.get("conversion_rate", 0)
-        score = 0.4 * patient_load + 0.2 * publications + 0.2 * social_reach + 0.2 * conversion
-        return round(score, 3)
+        return round(0.4 * patient_load + 0.2 * publications + 0.2 * social_reach + 0.2 * conversion, 3)
 
     def classify_doctor_tier(self, score: float) -> str:
-        if score >= 0.75:
-            return "high"
-        elif score >= 0.45:
-            return "medium"
-        return "low"
+        return "high" if score >= 0.75 else ("medium" if score >= 0.45 else "low")
 
 
 # ─────────────────────────────────────────────
@@ -852,9 +802,7 @@ class DoctorAnalyticsEnhanced:
         self.df["territory"]   = self.df["territory"].astype(str).str.strip().str.lower()
         self.df["doctor_name"] = self.df["doctor_name"].astype(str).str.strip()
         self.df["doctor_id"]   = self.df["doctor_id"].astype(str).str.strip()
-        self.df["interaction_date"] = pd.to_datetime(
-            self.df["interaction_date"], dayfirst=True, errors="coerce"
-        )
+        self.df["interaction_date"] = pd.to_datetime(self.df["interaction_date"], dayfirst=True, errors="coerce")
 
         if self.df["interest_level"].dtype == object:
             _map = {"low": 1, "medium": 3, "high": 5}
@@ -894,8 +842,7 @@ class DoctorAnalyticsEnhanced:
         doc_df = self.df[self.df["doctor_id"] == str(doctor_id).strip()]
         if doc_df.empty:
             return 120
-        times = doc_df["actual_time_seconds"].dropna().tolist()
-        times = [t for t in times if t > 0]
+        times = [t for t in doc_df["actual_time_seconds"].dropna().tolist() if t > 0]
         if len(times) >= 5:
             return int(np.median(times[-5:]))
         global_avg = self.df["actual_time_seconds"]
@@ -914,7 +861,6 @@ class DoctorAnalyticsEnhanced:
             return None
 
         doctor_df = doctor_df.copy()
-
         if auto_predict_time:
             selected_time = self.predict_available_time(doctor_id)
 
@@ -931,23 +877,23 @@ class DoctorAnalyticsEnhanced:
         }
 
         engagement = {
-            "total_interactions": int(doctor_df["interaction_id"].nunique()),
-            "avg_interest_level": round(doctor_df["interest_level"].mean(), 2),
-            "conversion_rate":    round((doctor_df["outcome"] == "positive").sum() / max(len(doctor_df), 1), 3),
-            "follow_up_rate":     round((doctor_df["follow_up"].astype(str).str.lower() == "yes").sum() / max(len(doctor_df), 1), 3),
-            "total_sales_volume": int(doctor_df["sales_volume"].sum()) if "sales_volume" in doctor_df.columns else 0,
+            "total_interactions":     int(doctor_df["interaction_id"].nunique()),
+            "avg_interest_level":     round(doctor_df["interest_level"].mean(), 2),
+            "conversion_rate":        round((doctor_df["outcome"] == "positive").sum() / max(len(doctor_df), 1), 3),
+            "follow_up_rate":         round((doctor_df["follow_up"].astype(str).str.lower() == "yes").sum() / max(len(doctor_df), 1), 3),
+            "total_sales_volume":     int(doctor_df["sales_volume"].sum()) if "sales_volume" in doctor_df.columns else 0,
             "avg_meeting_duration_sec": int(doctor_df["actual_time_seconds"].mean()) if "actual_time_seconds" in doctor_df.columns else None,
         }
 
         latest = doctor_df.sort_values("interaction_date", ascending=False).iloc[0]
         last_meeting = {
-            "date": str(latest["interaction_date"].date()) if pd.notna(latest["interaction_date"]) else None,
-            "product": latest.get("product_name", ""),
-            "interest_level": int(latest.get("interest_level", 0)),
-            "outcome": latest.get("outcome", ""),
-            "objection": latest.get("objection", "") if "objection" in latest else (latest.get("objection_type", "") if "objection_type" in latest else ""),
+            "date":              str(latest["interaction_date"].date()) if pd.notna(latest["interaction_date"]) else None,
+            "product":           latest.get("product_name", ""),
+            "interest_level":    int(latest.get("interest_level", 0)),
+            "outcome":           latest.get("outcome", ""),
+            "objection":         latest.get("objection", "") if "objection" in latest else (latest.get("objection_type", "") if "objection_type" in latest else ""),
             "actual_time_seconds": int(latest.get("actual_time_seconds", 0)),
-            "meeting_notes": latest.get("meeting_notes", "") if "meeting_notes" in latest else None,
+            "meeting_notes":     latest.get("meeting_notes", "") if "meeting_notes" in latest else None,
         }
 
         if "actual_time_seconds" in doctor_df.columns:
@@ -960,45 +906,37 @@ class DoctorAnalyticsEnhanced:
         else:
             top_products_history = []
 
-        aida = self.aida_classifier.classify(doctor_df)
-        intent = self.intent_engine.compute(doctor_df)
-        persona = self.persona_classifier.classify(doctor_df, doctor_info)
-
+        aida         = self.aida_classifier.classify(doctor_df)
+        intent       = self.intent_engine.compute(doctor_df)
+        persona      = self.persona_classifier.classify(doctor_df, doctor_info)
         doctor_score = self.reco_engine.score_doctor(doctor_info)
         doctor_tier  = self.reco_engine.classify_doctor_tier(doctor_score)
 
         scored_products = self.reco_engine.score_products(doctor_df)
         recommendations = self.reco_engine.build_recommendations(
-            doctor_df=doctor_df,
-            scored_products=scored_products,
-            selected_time=selected_time,
-            aida_stage=aida["aida_stage"],
+            doctor_df=doctor_df, scored_products=scored_products,
+            selected_time=selected_time, aida_stage=aida["aida_stage"],
         )
 
-        all_ranked = scored_products["all_products_ranked"]
+        all_ranked  = scored_products["all_products_ranked"]
         top_product = all_ranked[0]["product_name"] if all_ranked else "—"
 
         nba = self.nba_engine.generate(
-            aida_stage=aida["aida_stage"],
-            intent_score=intent["intent_score"],
-            persona=persona["persona"],
-            top_product=top_product,
+            aida_stage=aida["aida_stage"], intent_score=intent["intent_score"],
+            persona=persona["persona"], top_product=top_product,
         )
-
         visit_success = self.success_predictor.predict(
-            doctor_df=doctor_df,
-            aida_stage=aida["aida_stage"],
-            intent_score=intent["intent_score"],
+            doctor_df=doctor_df, aida_stage=aida["aida_stage"], intent_score=intent["intent_score"],
         )
 
         product_list = []
         for p in doctor_df["product_name"].unique():
             p_df = doctor_df[doctor_df["product_name"] == p]
             product_list.append({
-                "product_name":    p,
-                "avg_interest":    round(p_df["interest_level"].mean(), 2),
-                "conversion_rate": round((p_df["outcome"] == "positive").sum() / max(len(p_df), 1), 3),
-                "times_presented": len(p_df),
+                "product_name":      p,
+                "avg_interest":      round(p_df["interest_level"].mean(), 2),
+                "conversion_rate":   round((p_df["outcome"] == "positive").sum() / max(len(p_df), 1), 3),
+                "times_presented":   len(p_df),
                 "total_sales_volume": int(p_df["sales_volume"].sum()) if "sales_volume" in p_df.columns else 0,
             })
 
@@ -1006,7 +944,7 @@ class DoctorAnalyticsEnhanced:
                   ("objection_type" if "objection_type" in doctor_df.columns else None)
         if obj_col:
             obj_series = doctor_df[obj_col].astype(str).str.strip().str.lower()
-            valid_obj = obj_series[~obj_series.isin(["nan", "none", ""])]
+            valid_obj  = obj_series[~obj_series.isin(["nan", "none", ""])]
             objection_analysis = {
                 "total_objections":    int(valid_obj.notna().sum()),
                 "objection_breakdown": valid_obj.value_counts().to_dict(),
@@ -1015,38 +953,48 @@ class DoctorAnalyticsEnhanced:
         else:
             objection_analysis = {"total_objections": 0, "objection_breakdown": {}, "has_objections": False}
 
+        # ── Churn risk (new — included if model loaded) ────────────────────
+        churn_risk = None
+        if _MODEL_REGISTRY and _MODEL_REGISTRY.churn:
+            try:
+                rfm        = _MODEL_REGISTRY.churn.build_rfm(doctor_id, self.df)
+                churn_risk = _MODEL_REGISTRY.churn.predict(rfm)
+            except Exception:
+                pass
+
         trends               = self.trend_engine.get_doctor_trends(doctor_id)
         competitive          = self.competitive_engine.get_competitive_analysis(doctor_id)
         territory_comparison = self.manager_engine.compare_doctor_to_territory(doctor_id, doctor_info["territory"])
         specialty_comparison = self.manager_engine.get_specialty_comparison(doctor_id)
         objection_deep       = self.objection_engine.get_objection_analysis(doctor_id)
 
-        return {
-            "doctor_info":        doctor_info,
-            "engagement_metrics": engagement,
-            "product_performance": {"product_breakdown": product_list},
-            "objection_analysis": objection_analysis,
-            "session_time":       selected_time,
-            "predicted_time":     self.predict_available_time(doctor_id),
-            "aida":          aida,
-            "intent":        intent,
-            "persona":       persona,
-            "visit_success": visit_success,
-            "next_best_action": nba,
-            "recommendations":  recommendations,
-            "doctor_scoring": {
-                "score": doctor_score,
-                "tier":  doctor_tier,
-            },
+        result = {
+            "doctor_info":           doctor_info,
+            "engagement_metrics":    engagement,
+            "product_performance":   {"product_breakdown": product_list},
+            "objection_analysis":    objection_analysis,
+            "session_time":          selected_time,
+            "predicted_time":        self.predict_available_time(doctor_id),
+            "aida":                  aida,
+            "intent":                intent,
+            "persona":               persona,
+            "visit_success":         visit_success,
+            "next_best_action":      nba,
+            "recommendations":       recommendations,
+            "doctor_scoring":        {"score": doctor_score, "tier": doctor_tier},
             "selected_employee_type": employee_type,
-            "trend_analytics":         trends,
+            "trend_analytics":        trends,
             "competitive_intelligence": competitive,
-            "territory_comparison":    territory_comparison,
-            "specialty_comparison":    specialty_comparison,
-            "objection_resolution":    objection_deep,
+            "territory_comparison":   territory_comparison,
+            "specialty_comparison":   specialty_comparison,
+            "objection_resolution":   objection_deep,
             "top_historical_products": top_products_history,
-            "last_meeting": last_meeting,
+            "last_meeting":           last_meeting,
         }
+        if churn_risk is not None:
+            result["churn_risk"] = churn_risk
+
+        return result
 
     def get_territory_overview(self, territory: str) -> Optional[Dict[str, Any]]:
         benchmarks = self.manager_engine.get_territory_benchmarks(territory)
@@ -1058,28 +1006,28 @@ class DoctorAnalyticsEnhanced:
         }
 
     def _get_territory_doctor_list(self, territory: str) -> List[Dict[str, Any]]:
-        t = territory.strip().lower()
+        t            = territory.strip().lower()
         territory_df = self.df[self.df["territory"] == t]
-        doctors = []
+        doctors      = []
         for did in territory_df["doctor_id"].unique():
             d = territory_df[territory_df["doctor_id"] == did]
             if d.empty:
                 continue
-            conv = (d["outcome"] == "positive").sum() / max(len(d), 1)
+            conv     = (d["outcome"] == "positive").sum() / max(len(d), 1)
             doc_info = {
-                "patient_load":      int(d["patient_load"].iloc[0]),
+                "patient_load":       int(d["patient_load"].iloc[0]),
                 "publications_count": int(d["publications_count"].iloc[0]),
                 "social_media_reach": int(d["social_media_reach"].iloc[0]),
-                "conversion_rate":   round(conv, 3),
+                "conversion_rate":    round(conv, 3),
             }
             doctors.append({
-                "doctor_id":           str(did),
-                "doctor_name":         d["doctor_name"].iloc[0],
-                "specialty":           d["specialty"].iloc[0],
-                "conversion_rate":     round(conv, 3),
-                "avg_interest":        round(d["interest_level"].mean(), 2),
-                "total_interactions":  len(d),
-                "total_sales_volume":  int(d["sales_volume"].sum()) if "sales_volume" in d.columns else 0,
-                "doctor_score":        self.reco_engine.score_doctor(doc_info),
+                "doctor_id":          str(did),
+                "doctor_name":        d["doctor_name"].iloc[0],
+                "specialty":          d["specialty"].iloc[0],
+                "conversion_rate":    round(conv, 3),
+                "avg_interest":       round(d["interest_level"].mean(), 2),
+                "total_interactions": len(d),
+                "total_sales_volume": int(d["sales_volume"].sum()) if "sales_volume" in d.columns else 0,
+                "doctor_score":       self.reco_engine.score_doctor(doc_info),
             })
         return sorted(doctors, key=lambda x: x["conversion_rate"], reverse=True)

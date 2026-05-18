@@ -1,0 +1,93 @@
+{
+  "trained_at": "2026-05-18T10:30:19.954766",
+  "models": {
+    "conversion": {
+      "model_type": "conversion",
+      "auc_roc": 0.9454,
+      "feature_names": [
+        "experience_years",
+        "patient_load",
+        "publications_count",
+        "social_media_reach",
+        "territory_enc",
+        "emp_type_enc",
+        "avg_interest_6m",
+        "avg_conv_rate_6m",
+        "follow_up_rate_6m",
+        "n_interactions_6m",
+        "interest_trend",
+        "follow_up_trend",
+        "days_since_last_visit",
+        "days_since_positive",
+        "days_since_high_interest",
+        "aida_stage_ord",
+        "spec_cardiologist",
+        "spec_diabetologist",
+        "spec_general_physician",
+        "spec_neurologist",
+        "spec_oncologist",
+        "spec_pulmonologist",
+        "spec_dermatologist",
+        "spec_pediatrician",
+        "spec_other",
+        "product_name_enc",
+        "sales_volume_norm",
+        "emp_type_target_enc",
+        "aida_stage_csv_ord",
+        "follow_up_bin",
+        "quarter_ord",
+        "product_cat_enc"
+      ],
+      "n_train": 10368,
+      "n_test": 2592
+    },
+    "aida": {
+      "model_type": "aida",
+      "macro_f1": 0.7541,
+      "feature_names": [
+        "avg_conv_rate_6m",
+        "avg_interest_6m",
+        "follow_up_rate_6m",
+        "interest_trend",
+        "follow_up_trend",
+        "days_since_positive",
+        "days_since_high_interest",
+        "n_interactions_6m",
+        "aida_stage_ord"
+      ],
+      "label_map": {
+        "0": "awareness",
+        "1": "interest",
+        "2": "desire",
+        "3": "action"
+      }
+    },
+    "persona": {
+      "model_type": "persona",
+      "silhouette": 0.3392,
+      "k": 6,
+      "cluster_labels": [
+        "Analytical / High-Publication",
+        "Relationship-Driven / High Follow-up",
+        "Fast Decision / High Conversion",
+        "Resistant / Low Engagement",
+        "Balanced / Mid-tier",
+        "Analytical / High-Publication"
+      ]
+    },
+    "churn": {
+      "model_type": "churn",
+      "auc_roc": 0.98,
+      "feature_names": [
+        "recency_days",
+        "frequency",
+        "monetary",
+        "avg_interest",
+        "interest_trend",
+        "follow_up_decline",
+        "conv_rate"
+      ],
+      "churn_rate": 0.3467
+    }
+  }
+}
